@@ -37,6 +37,8 @@ METHODS = {
     "icd_3char",        # {}: ICD-10 category, e.g. J18.9 -> J18
     "diagnosis_group",  # {mapping}: must be "pets_eval.utility.health.diagnosis_group"; unmapped codes become blank
     "icd_chapter",      # {}: first letter of the ICD-10 code
+    "url_host",         # {}: URL/domain -> lower-case host only (scheme, credentials, port, path, query dropped)
+    "registrable_domain",  # {}: host -> its registrable domain (a.b.example.com -> example.com); IPs -> /24
     "redact_spans",     # {profile}: replace detected PII spans; profile "typed_placeholders" -> [PERSON],
                         #   "entity_pseudonyms" -> [PERSON_1], numbered per Detect entity within one conversation
 }
@@ -107,9 +109,13 @@ def _categorical(k: int) -> list:
             ("merged", _r("GENERALISE", "merge_rare", min_count=k * 200))]
 
 
+# S5: paths and query strings carry tokens and personal pages; the host keeps the browsing signal, the registrable
+# domain keeps only the site
+_URL = [("host", _r("GENERALISE", "url_host")), ("domain", _r("GENERALISE", "registrable_domain"))]
+
 # Ladders keyed on subtype; also used when a sensitive attribute has one of these subtypes.
 SUBTYPE_LADDERS = {"AGE": _AGE, "BIRTH_DATE": _DOB, "TIMESTAMP": _TIMESTAMP, "DATE": _DATE, "POSTCODE": _POSTCODE,
-                   "GPS_COORDINATE": _GPS, **{s: _NUMERIC for s in NUMERIC}}
+                   "GPS_COORDINATE": _GPS, "URL": _URL, **{s: _NUMERIC for s in NUMERIC}}
 
 # Default risk targets per trust level. Proposals (plan §6), to confirm; a scenario's own target overrides them.
 DEFAULT_TARGETS = {
@@ -119,6 +125,10 @@ DEFAULT_TARGETS = {
     "public": {"k": 10, "l": 3, "free_text": False},
 }
 MAX_SUPPRESSION = 0.02  # local suppression budget, share of rows (plan §7.5)
+# S4: rows whose subject cannot be resolved (e.g. an ED visit registered without an identity code) may be at most
+# this share of a released table. They are counted conservatively: in each QI class all of them together are one
+# person (actions.small_classes, search.risk), so they never raise k.
+MAX_UNKNOWN_SUBJECTS = 0.05
 
 
 def _check_trust(trust_level: str) -> None:
@@ -129,13 +139,15 @@ def _check_trust(trust_level: str) -> None:
 def targets(trust_level: str, scenario_targets: dict | None = None) -> dict:
     """Risk target for a trust level; scenario_targets overrides individual keys. Loosening is noted, never silent."""
     _check_trust(trust_level)
-    base = {**DEFAULT_TARGETS[trust_level], "max_suppression": MAX_SUPPRESSION}
+    base = {**DEFAULT_TARGETS[trust_level], "max_suppression": MAX_SUPPRESSION,
+            "max_unknown_subjects": MAX_UNKNOWN_SUBJECTS}
     over = scenario_targets or {}
     notes = []
     for key, new in over.items():
         old = base.get(key)
         looser = (key in ("k", "l") and (old is None or new < old)) or \
-                 (key == "max_suppression" and new > old) or (key == "free_text" and old is False and new)
+                 (key in ("max_suppression", "max_unknown_subjects") and new > old) or \
+                 (key == "free_text" and old is False and new)
         if looser:
             notes.append(f"scenario loosens {key}: {old} -> {new} (trust-level default for {trust_level})")
     return {**base, **over, "notes": notes}

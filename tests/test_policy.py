@@ -232,3 +232,16 @@ def test_should_accept_drop_and_a_selector_filled_hmac_domain():
     email = lab("direct_identifier", "EMAIL")
     assert violations(email, {"action": "DROP", "method": None, "params": {}}, "public") == []
     assert violations(email, {"action": "HMAC", "method": "hmac_sha256", "params": {"domain": "r/email"}}, "public") == []
+
+
+def test_url_quasi_identifier_has_a_host_then_domain_ladder():
+    from server.actions import apply_column
+    import pandas as pd
+    lab = {"privacy_role": "quasi_identifier", "subtype": "URL", "confidence": .95}
+    rungs = candidates(lab, "contractual", required=True)["rungs"]
+    assert [r["method"] for r in rungs if r["action"] != "DROP"] == ["url_host", "registrable_domain"]
+    s = pd.Series(["https://u:p@Mail.Example.com/x?token=1", "cdn.example.com.", ""])
+    host, _ = apply_column(s, {"action": "GENERALISE", "method": "url_host"}, b"k", "r")
+    dom, _ = apply_column(s, {"action": "GENERALISE", "method": "registrable_domain"}, b"k", "r")
+    assert host.tolist() == ["mail.example.com", "cdn.example.com", ""]
+    assert dom.tolist() == ["example.com", "example.com", ""]

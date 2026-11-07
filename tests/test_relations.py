@@ -241,3 +241,51 @@ def test_should_keep_local_account_name_that_is_itself_the_join_child():
     lab = labels([("identity", "upn", "direct_identifier", "EMAIL"), ("logs", "upn", "direct_identifier", "EMAIL")])
     r = discover(t, lab)
     assert (r["subject_paths"], r["subject_key"]) == ({"identity": ["identity.upn"], "logs": ["logs.upn"]}, "logs.upn")
+
+
+def energy_like(n=120):
+    """customers: one row per person (hetu sometimes blank), meter key; readings repeat the meter id."""
+    customers = pd.DataFrame({"customer_id": [f"C{i:05d}" for i in range(n)],
+                              "metering_point_id": [f"6430000000{i:08d}" for i in range(n)],
+                              "hetu": ["" if i % 9 == 0 else f"0101{i:02d}-9{i:02d}X" for i in range(n)]})
+    readings = pd.DataFrame({"reading_id": [f"R{i:07d}" for i in range(n * 5)],
+                             "metering_point_id": [f"6430000000{i % n:08d}" for i in range(n * 5)]})
+    lab = labels([("customers", "customer_id", "record_key", "RECORD_ID"),
+                  ("customers", "metering_point_id", "technical_identifier", "METER_ID"),
+                  ("customers", "hetu", "direct_identifier", "NATIONAL_ID"),
+                  ("readings", "reading_id", "record_key", "RECORD_ID"),
+                  ("readings", "metering_point_id", "technical_identifier", "METER_ID")])
+    return {"customers": customers, "readings": readings}, lab
+
+
+def test_s1_person_rows_use_their_record_key_and_children_inherit_it():
+    t, lab = energy_like()
+    r = discover(t, lab)
+    assert r["subject_keys"]["customers"] == "customers.customer_id"   # hetu 11% blank: not a key, yet rows are people
+    assert r["subject_paths"]["readings"] == ["readings.metering_point_id", "customers.metering_point_id",
+                                              "customers.customer_id"]
+
+
+def test_s1_needs_a_person_identifier_unique_per_row():
+    t, lab = energy_like()
+    t["customers"]["hetu"] = "010101-901X"                              # the same value everywhere: not one per person
+    assert "customers" not in discover(t, lab)["subject_keys"]
+
+
+def test_s2_licence_plates_are_subjects():
+    plates = [f"ABC-{i % 60:03d}" for i in range(300)]
+    t = {"parking": pd.DataFrame({"event_id": [f"E{i:05d}" for i in range(300)], "plate": plates})}
+    lab = labels([("parking", "event_id", "record_key", "RECORD_ID"),
+                  ("parking", "plate", "direct_identifier", "LICENSE_PLATE")])
+    assert discover(t, lab)["subject_keys"] == {"parking": "parking.plate"}
+
+
+def test_s3_adopts_only_confident_complete_detect_suggestions_for_unresolved_tables():
+    rel = {"subject_paths": {"a": ["a.x"]}, "subject_keys": {"a": "a.x"}, "subject_key": "a.x", "notices": []}
+    sug = [{"table": "a", "column": "y", "confidence": .99, "needs_review": False, "non_blank_share": 1.0},
+           {"table": "b", "column": "p", "confidence": .95, "needs_review": False, "non_blank_share": .22},
+           {"table": "b", "column": "q", "confidence": .92, "needs_review": False, "non_blank_share": .99},
+           {"table": "c", "column": "r", "confidence": .99, "needs_review": True, "non_blank_share": 1.0}]
+    out = relations.adopt_detect_subjects(rel, sug)
+    assert out["subject_keys"] == {"a": "a.x", "b": "b.q"}             # a kept; b.p too sparse; c under review
+    assert any(n.startswith("subject_adopted: b.q") for n in out["notices"])

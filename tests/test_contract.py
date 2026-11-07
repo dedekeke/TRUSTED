@@ -217,12 +217,13 @@ def test_whole_vocabulary_maps_to_a_policy_or_unsupported_label():
 
 def test_unsupported_vocabulary_pair_is_named(tmp_path):
     data = write_data(tmp_path)
-    vocab = [['non_sensitive', 'MEASUREMENT'], ['non_sensitive', 'SECRET'], ['sensitive_attribute', 'URL']]
+    # (URL gained a ladder in S5; AGGREGATE as a quasi-identifier still has none)
+    vocab = [['non_sensitive', 'MEASUREMENT'], ['non_sensitive', 'SECRET'], ['quasi_identifier', 'AGGREGATE']]
     lab = write_detect_dir(tmp_path / 'detect', data, labels(), [note_span(data)], vocabulary=vocab)
     assert run_select(tmp_path, data, lab) == 0
     p = plan(tmp_path)
     assert [(u['role'], u['subtype']) for u in p['label_coverage']['vocabulary']['unsupported']] == \
-        [('non_sensitive', 'SECRET'), ('sensitive_attribute', 'URL')]
+        [('non_sensitive', 'SECRET'), ('quasi_identifier', 'AGGREGATE')]
     assert any(w.startswith('unsupported_label: 2 of 3') for w in p['warnings'])
 
 

@@ -27,6 +27,7 @@ FORMAT_RX = {  # allowed non-blank output per method
     "week_hour": r"\d{4}-\d{2}-\d{2} \d{2}:00", "month_hour": r"\d{4}-\d{2}-01 \d{2}:00", "year_hour": r"\d{4}-01-01 \d{2}:00",
     "age_band": AGE_BAND, "derive_age_band": AGE_BAND, "ipv4_prefix": r"(?:\d{1,3}\.){3}0",
     "icd_3char": r"[A-Z]\d{2}", "icd_chapter": r"[A-Z]",
+    "url_host": r"[a-z0-9-]+(?:\.[a-z0-9-]+)*", "registrable_domain": r"[a-z0-9-]+(?:\.[a-z0-9-]+)*",
 }
 TOL = 1e-9
 
