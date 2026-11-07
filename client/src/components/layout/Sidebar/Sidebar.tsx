@@ -4,6 +4,7 @@ import {
   DashboardOutlined,
   ExperimentOutlined,
   FileSearchOutlined,
+  PlayCircleOutlined,
   SafetyCertificateOutlined,
   TeamOutlined,
 } from '@ant-design/icons'
@@ -20,9 +21,10 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
   const items = [
     { key: '/', icon: <DashboardOutlined />, label: 'Overview' },
+    { key: '/run', icon: <PlayCircleOutlined />, label: 'Run pipeline' },
     {
       type: 'group' as const,
-      label: 'Pipeline',
+      label: 'Step by step (in browser)',
       children: [
         {
           key: '/detect',
@@ -64,7 +66,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       </div>
       <Menu
         mode="inline"
-        selectedKeys={[pathname]}
+        selectedKeys={[pathname.startsWith('/run') ? '/run' : pathname]}
         items={items}
         onClick={({ key }) => {
           navigate(key)

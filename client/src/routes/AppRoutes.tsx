@@ -6,6 +6,7 @@ import Evaluate from '@/pages/Evaluate'
 import Home from '@/pages/Home'
 import NotFound from '@/pages/NotFound'
 import Protect from '@/pages/Protect'
+import Run from '@/pages/Run'
 import Scenarios from '@/pages/Scenarios'
 import { RunDetect, RunPlan } from '@/features/run'
 import { backend } from '@/services/api'
@@ -15,6 +16,8 @@ export default function AppRoutes() {
     <Routes>
       <Route element={<AppLayout />}>
         <Route index element={<Home />} />
+        <Route path="run" element={<Run />} />
+        <Route path="run/:id" element={<Run />} />
         <Route path="detect" element={backend.enabled ? <RunDetect /> : <Detect />} />
         <Route path="protect" element={backend.enabled ? <RunPlan /> : <Protect />} />
         <Route path="evaluate" element={<Evaluate />} />

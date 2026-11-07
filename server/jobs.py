@@ -118,7 +118,9 @@ class Jobs:
             s = st["steps"][step]
             if fields.get("status") == "running" and s["status"] != "running":
                 s["started_at"], s["finished_at"], s["duration_s"] = now(), None, None
-            if fields.get("status") not in (None, "running", "queued") and s.get("started_at") and not s.get("finished_at"):
+            if step == "review":  # a human gate checked while select runs: it has no runtime of its own
+                s["started_at"] = s["finished_at"] = s["duration_s"] = None
+            elif fields.get("status") not in (None, "running", "queued") and s.get("started_at") and not s.get("finished_at"):
                 s["finished_at"] = now()
                 s["duration_s"] = round((datetime.fromisoformat(s["finished_at"]) -
                                          datetime.fromisoformat(s["started_at"])).total_seconds(), 1)
@@ -241,7 +243,7 @@ class Jobs:
             self._set(d, s, status="queued", summary="", error=None, started_at=None, finished_at=None,
                       duration_s=None)
         self._set(d, "review", status="success", error=None,
-                  summary=f"{len(confirmed)} nhãn đã được người duyệt xác nhận")
+                  summary=f"{len(confirmed)} labels confirmed by a reviewer")
         self._set(d, state="running", attempt=attempt)
         self._spawn(job_id, d, "select", attempt, str(path))
         return self.state(job_id)
@@ -313,7 +315,7 @@ class Jobs:
         if entry.get("status") == "running":
             self._set(d, stage, status="running", error=None)
             if stage == "select" and attempt == 1:
-                self._set(d, "review", status="running", summary="đang kiểm tra cột bắt buộc")
+                self._set(d, "review", status="running", summary="checking required columns")
             return
         ctx = self.ctx(d)
         if stage == "detect":
@@ -329,26 +331,26 @@ class Jobs:
                 if attempt == 1:
                     n = sum(r["confidence"] is not None for r in api_views.review_items(ctx))
                     self._set(d, "review", status="success",
-                              summary=f"{n} cột được cờ, không cột bắt buộc nào cần duyệt" if n
-                              else "không có cột cần duyệt")
+                              summary=f"{n} columns flagged, none required by the scenario" if n
+                              else "no column needs review")
             else:
-                msg = (f"{len(errors)} lỗi: " + str(errors[0])[:300]) if errors else "select từ chối input (xem log)"
+                msg = (f"{len(errors)} errors: " + str(errors[0])[:300]) if errors else "select rejected the input (see log)"
                 self._set(d, "select", status="failed", error=msg,
                           summary=api_views.summary("select", d, ctx) if plan.is_file() else "blocked")
                 if only_review:
                     self._set(d, "review", status="needs_review", summary=api_views.summary("review", d, ctx),
-                              error="Cần xác nhận nhãn các cột đang chặn rồi chạy tiếp")
+                              error="Confirm the labels of the blocking columns to continue")
                 elif attempt == 1:
-                    self._set(d, "review", status="success", summary="không phải lỗi duyệt nhãn")
+                    self._set(d, "review", status="success", summary="not a review issue")
         elif stage == "search":
             ok = bool(entry.get("approved"))
             self._set(d, "search", status="success" if ok else "failed",
                       summary=api_views.summary("search", d, ctx),
-                      error=None if ok else f"search: {entry.get('status')} (chưa đạt mục tiêu, không được duyệt)")
+                      error=None if ok else f"search: {entry.get('status')} (targets not met, not approved)")
         elif stage == "transform":
             s = entry.get("status")
             if s == "not_run":
-                self._set(d, "transform", status="skipped", summary="không chạy", error=entry.get("reason"))
+                self._set(d, "transform", status="skipped", summary="not run", error=entry.get("reason"))
             else:
                 status = "success" if s == "validated" else "warning" if s == "unapproved_export" else "failed"
                 self._set(d, "transform", status=status, summary=api_views.summary("transform", d, ctx),
@@ -369,7 +371,7 @@ class Jobs:
             self._set(d, "evaluate", status="running")
             self._set(d, "evaluate", status="success", summary=api_views.summary("evaluate", d, ctx))
         elif steps["transform"]["status"] in OK and no_scorecard:
-            self._set(d, "evaluate", status="skipped", summary="scorecard đã tắt (no_scorecard)")
+            self._set(d, "evaluate", status="skipped", summary="scorecard disabled (no_scorecard)")
         steps = self._status(d)["steps"]
         for s in STEPS:  # whatever never ran after a stop is skipped
             if steps[s]["status"] in ("queued", "running"):

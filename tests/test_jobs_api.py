@@ -54,7 +54,8 @@ def test_bundled_dataset_runs_all_steps_green_and_serves_tables_without_values(s
     assert st["state"] == "succeeded", st
     assert steps(st) == {"input": "success", "detect": "success", "review": "success", "select": "success",
                          "search": "success", "transform": "success", "evaluate": "skipped"}
-    assert all(s["duration_s"] is not None for s in st["steps"] if s["status"] == "success")
+    assert all(s["duration_s"] is not None for s in st["steps"] if s["status"] == "success" and s["name"] != "review")
+    assert next(s for s in st["steps"] if s["name"] == "review")["duration_s"] is None  # a human gate, not a runtime
     texts = [call(server, f"/api/jobs/{jid}")[2]]
     for name in ("input", "detect", "review", "select", "search", "transform", "evaluate"):
         status, view, text, _ = call(server, f"/api/jobs/{jid}/steps/{name}")

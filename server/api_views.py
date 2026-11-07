@@ -56,11 +56,11 @@ def issues_from(messages: list, level: str) -> list[dict]:
 def view_input(job: Path, ctx: dict) -> dict:
     info = _json(job / "input.json") or {"tables": []}
     rows = info["tables"]
-    return {"stats": [{"label": "Bảng", "value": len(rows)},
-                      {"label": "Dòng", "value": sum(r["rows"] for r in rows)},
-                      {"label": "Cột", "value": sum(r["columns"] for r in rows)},
-                      {"label": "Dung lượng (MB)", "value": round(sum(r["size_mb"] for r in rows), 1)}],
-            "tables": [table("files", "File đầu vào", [("file", "File"), ("rows", "Dòng"), ("columns", "Cột"),
+    return {"stats": [{"label": "Tables", "value": len(rows)},
+                      {"label": "Rows", "value": sum(r["rows"] for r in rows)},
+                      {"label": "Columns", "value": sum(r["columns"] for r in rows)},
+                      {"label": "Size (MB)", "value": round(sum(r["size_mb"] for r in rows), 1)}],
+            "tables": [table("files", "Input files", [("file", "File"), ("rows", "Rows"), ("columns", "Columns"),
                                                        ("size_mb", "MB"), ("sha256", "sha256 (12)")], rows)],
             "issues": info.get("issues", [])}
 
@@ -93,25 +93,25 @@ def view_detect(job: Path, ctx: dict) -> dict:
                {"detector": "Detect v3 (ours)", "macro_f1_names": DETECT_V3_EVAL["macro_f1_names"],
                 "macro_f1_blind": DETECT_V3_EVAL["macro_f1_blind"], "sensitive_recall": None}]
     return {
-        "stats": [{"label": "Cột đã gán nhãn", "value": len(labels)},
+        "stats": [{"label": "Columns labelled", "value": len(labels)},
                   *({"label": r, "value": n} for r, n in roles.most_common()),
-                  {"label": "Cần duyệt", "value": sum(x["needs_review"] for x in labels)},
-                  {"label": "Span PII trong text", "value": sum(spans.values())}],
+                  {"label": "Needs review", "value": sum(x["needs_review"] for x in labels)},
+                  {"label": "PII spans in text", "value": sum(spans.values())}],
         "tables": [
-            table("labels", "Nhãn từng cột", [("table", "Bảng"), ("column", "Cột"), ("privacy_role", "Role"),
-                                              ("subtype", "Subtype"), ("confidence", "Độ tin cậy"),
-                                              ("art9", "Art. 9"), ("needs_review", "Cần duyệt")], labels),
-            table("spans", "PII trong free text (số span theo loại)", [("label", "Loại"), ("count", "Số span")],
+            table("labels", "Label per column", [("table", "Table"), ("column", "Column"), ("privacy_role", "Role"),
+                                              ("subtype", "Subtype"), ("confidence", "Confidence"),
+                                              ("art9", "Art. 9"), ("needs_review", "Needs review")], labels),
+            table("spans", "PII in free text (spans per type)", [("label", "Type"), ("count", "Spans")],
                   [{"label": k, "count": v} for k, v in spans.most_common()]),
-            table("linkage", "Liên kết phát hiện được", [("kind", "Loại"), ("left", "Từ"), ("right", "Tới"),
-                                                         ("confidence", "Độ tin cậy"), ("needs_review", "Cần duyệt")],
+            table("linkage", "Detected linkage", [("kind", "Kind"), ("left", "From"), ("right", "To"),
+                                                         ("confidence", "Confidence"), ("needs_review", "Needs review")],
                   [{"kind": r.get("kind"), "left": _ref(r.get("left")), "right": _ref(r.get("right")),
                     "confidence": _r(r.get("confidence"), 3), "needs_review": r.get("needs_review")} for r in link]),
-            table("quality", "Chất lượng detector so với baseline", [
-                ("detector", "Detector"), ("macro_f1_names", "Macro-F1 (có tên cột)"),
-                ("macro_f1_blind", "Macro-F1 (che tên cột)"), ("sensitive_recall", "Sensitive recall")], quality,
-                note="Số đánh giá offline leave-one-dataset-out trên 9 dataset có nhãn (README server/detect), "
-                     "không đo trên lần chạy này."),
+            table("quality", "Detector quality vs baseline", [
+                ("detector", "Detector"), ("macro_f1_names", "Macro-F1 (with names)"),
+                ("macro_f1_blind", "Macro-F1 (names hidden)"), ("sensitive_recall", "Sensitive recall")], quality,
+                note="Offline leave-one-dataset-out evaluation on the 9 labelled datasets (server/detect README); "
+                     "not measured on this run."),
         ],
         "issues": []}
 
@@ -147,14 +147,14 @@ def review_items(ctx: dict) -> list[dict]:
 
 def view_review(job: Path, ctx: dict) -> dict:
     rows = review_items(ctx)
-    return {"stats": [{"label": "Cột được cờ cần duyệt", "value": len(rows)},
-                      {"label": "Đang chặn Select", "value": sum(r["blocking"] for r in rows)},
-                      {"label": "Đã xác nhận", "value": sum(bool(r["confirmed"]) for r in rows)}],
-            "tables": [table("review", "Cột cần người duyệt", [
-                ("table", "Bảng"), ("column", "Cột"), ("privacy_role", "Role (detect)"), ("subtype", "Subtype"),
-                ("confidence", "Độ tin cậy"), ("required_by", "Task cần cột này"), ("blocking", "Đang chặn"),
-                ("confirmed", "Đã xác nhận")], rows,
-                note="Chỉ cột 'đang chặn' bắt buộc phải xác nhận; xác nhận được ghi vào provenance (confirm_sha256).")],
+    return {"stats": [{"label": "Columns flagged for review", "value": len(rows)},
+                      {"label": "Blocking select", "value": sum(r["blocking"] for r in rows)},
+                      {"label": "Confirmed", "value": sum(bool(r["confirmed"]) for r in rows)}],
+            "tables": [table("review", "Columns that need a reviewer", [
+                ("table", "Table"), ("column", "Column"), ("privacy_role", "Role (detected)"), ("subtype", "Subtype"),
+                ("confidence", "Confidence"), ("required_by", "Required by task"), ("blocking", "Blocking"),
+                ("confirmed", "Confirmed")], rows,
+                note="Only blocking columns must be confirmed; confirmations are recorded in the plan provenance (confirm_sha256).")],
             "issues": []}
 
 
@@ -171,16 +171,16 @@ def view_select(job: Path, ctx: dict) -> dict:
              "reason": c.get("reason", "")} for c in cols]
     tabs = [{"table": t, "action": d.get("action"), "record_key": d.get("record_key") or "",
              "reason": d.get("reason", "")} for t, d in (plan.get("tables") or {}).items()]
-    return {"stats": [{"label": "Trạng thái", "value": plan.get("status")},
-                      {"label": "Kịch bản", "value": plan.get("scenario") or plan.get("source")},
+    return {"stats": [{"label": "Status", "value": plan.get("status")},
+                      {"label": "Scenario", "value": plan.get("scenario") or plan.get("source")},
                       {"label": "Trust level", "value": plan.get("trust_level")},
                       *({"label": a, "value": n} for a, n in actions.most_common())],
-            "tables": [table("columns", "PET được chọn cho từng cột", [
-                ("table", "Bảng"), ("column", "Cột"), ("privacy_role", "Role"), ("subtype", "Subtype"),
-                ("action", "Hành động"), ("method", "Phương pháp"), ("params", "Tham số"),
-                ("required_by", "Task cần"), ("confidence", "Độ tin cậy"), ("reason", "Lý do")], rows),
-                table("tables", "Bảng được phát hành", [("table", "Bảng"), ("action", "Quyết định"),
-                                                       ("record_key", "Record key"), ("reason", "Lý do")], tabs)],
+            "tables": [table("columns", "PET chosen per column", [
+                ("table", "Table"), ("column", "Column"), ("privacy_role", "Role"), ("subtype", "Subtype"),
+                ("action", "Action"), ("method", "Method"), ("params", "Params"),
+                ("required_by", "Required by"), ("confidence", "Confidence"), ("reason", "Reason")], rows),
+                table("tables", "Tables released", [("table", "Table"), ("action", "Decision"),
+                                                       ("record_key", "Record key"), ("reason", "Reason")], tabs)],
             "issues": issues_from(plan.get("errors"), "error") + issues_from(plan.get("warnings"), "warning")}
 
 
@@ -217,27 +217,27 @@ def view_search(job: Path, ctx: dict) -> dict:
                                           default=None))}
              for e in res.get("search_trace", [])]
     budget = out.get("budget") or {}
-    return {"stats": [{"label": "Trạng thái", "value": res.get("status")},
-                      {"label": "Được duyệt phát hành", "value": out.get("approved")},
-                      {"label": "Lượt đánh giá", "value": f"{budget.get('used')}/{budget.get('limit')}"},
+    return {"stats": [{"label": "Status", "value": res.get("status")},
+                      {"label": "Approved for release", "value": out.get("approved")},
+                      {"label": "Evaluations", "value": f"{budget.get('used')}/{budget.get('limit')}"},
                       {"label": "Information loss", "value": _r(m.get("information_loss"), 3)},
-                      {"label": "Mục tiêu", "value": ", ".join(f"{k}={v}" for k, v in targets.items()
+                      {"label": "Targets", "value": ", ".join(f"{k}={v}" for k, v in targets.items()
                                                                 if k in ("k", "l", "t", "max_suppression"))}],
-            "tables": [table("risk", "Rủi ro: mục tiêu vs đạt được (theo bảng)", [
-                ("table", "Bảng"), ("target_k", "k mục tiêu"), ("min_k", "k nhỏ nhất"),
-                ("share_below_k", "% bản ghi dưới k"), ("unknown_subject_rows", "Dòng không rõ chủ thể"),
+            "tables": [table("risk", "Risk: target vs achieved (per table)", [
+                ("table", "Table"), ("target_k", "Target k"), ("min_k", "Min k"),
+                ("share_below_k", "Share below k"), ("unknown_subject_rows", "Rows without subject"),
                 ("l", "l-diversity"), ("t", "t-closeness")], risk),
-                table("utility", "Utility theo task (đo trên dữ liệu đã bảo vệ)", [
-                    ("task", "Task"), ("score", "Ours"), ("unsearched", "Trước search"), ("floor", "Ngưỡng τ"),
-                    ("ok", "Đạt"), ("b2", "B2"), ("b2k", "B2-k")], util,
-                    note="B2/B2-k: điểm task trong results/benchmark.json của ban tổ chức."),
-                table("violations", "Vi phạm còn lại", [("metric", "Chỉ số"), ("table", "Bảng"),
-                                                        ("target", "Mục tiêu"), ("achieved", "Đạt"),
-                                                        ("requirements", "Task liên quan")], viol),
-                table("trace", "Các bước search", [
-                    ("evaluation", "#"), ("phase", "Pha"), ("changed_column", "Cột thay đổi"), ("accepted", "Nhận"),
-                    ("reason", "Lý do"), ("information_loss", "Info loss"), ("suppressed_fraction", "% xoá"),
-                    ("max_share_below_k", "Max % dưới k")], trace)],
+                table("utility", "Utility per task (measured on protected data)", [
+                    ("task", "Task"), ("score", "Ours"), ("unsearched", "Before search"), ("floor", "τ floor"),
+                    ("ok", "Met"), ("b2", "B2"), ("b2k", "B2-k")], util,
+                    note="B2/B2-k: task scores from the organisers' results/benchmark.json."),
+                table("violations", "Remaining violations", [("metric", "Metric"), ("table", "Table"),
+                                                        ("target", "Target"), ("achieved", "Achieved"),
+                                                        ("requirements", "Tasks")], viol),
+                table("trace", "Search trace", [
+                    ("evaluation", "#"), ("phase", "Phase"), ("changed_column", "Changed column"), ("accepted", "Accepted"),
+                    ("reason", "Reason"), ("information_loss", "Info loss"), ("suppressed_fraction", "Suppressed"),
+                    ("max_share_below_k", "Max share below k")], trace)],
             "issues": issues_from(res.get("errors"), "error") + issues_from(res.get("warnings"), "warning")
             + ([{"level": "error", "code": "conflict", "message": res["conflict"].get("reason", "")}]
                if res.get("conflict") else [])}
@@ -258,7 +258,7 @@ def view_transform(job: Path, ctx: dict) -> dict:
               for c in man.get("checks", [])]
     exported = [{"table": t, "rows": (stats.get("rows") or {}).get(t), "columns": (stats.get("columns") or {}).get(t),
                  "suppressed_rows": (stats.get("suppressed_rows") or {}).get(t, 0),
-                 "suppressed_cells": json.dumps((stats.get("suppressed_cells") or {}).get(t, {})) or ""}
+                 "suppressed_cells": json.dumps(cells) if (cells := (stats.get("suppressed_cells") or {}).get(t)) else ""}
                 for t in (man.get("tables") or {})]
     raw, fp, un = ic.get("raw_totals") or {}, ic.get("classified_false_positives") or {}, ic.get("unexplained") or {}
     ident = [{"label": k, "raw_hits": raw.get(k, 0), "false_positives": (fp.get(k) or {}).get("count", 0),
@@ -266,20 +266,20 @@ def view_transform(job: Path, ctx: dict) -> dict:
              for k in sorted(set(raw) | set(un))]
     red = [{"column": c, "method": m} for c, m in (stats.get("redaction") or {}).items()]
     return {"stats": [{"label": "Validation", "value": man.get("validation_status")},
-                      {"label": "Phát hành được duyệt", "value": man.get("approved_release")},
-                      {"label": "Bảng xuất", "value": len(man.get("tables") or {})},
-                      {"label": "Bảng giữ lại (không xuất)", "value": len(man.get("withheld_tables") or [])},
-                      {"label": "Checks đạt", "value": f"{sum(c['status'] == 'passed' for c in checks)}/{len(checks)}"}],
-            "tables": [table("checks", "Kiểm tra sau khi ghi file", [("name", "Check"), ("status", "Kết quả"),
-                                                                     ("problems", "Lỗi")], checks),
-                       table("exported", "Bảng đã xuất (protected/)", [
-                           ("table", "Bảng"), ("rows", "Dòng"), ("columns", "Cột"),
-                           ("suppressed_rows", "Dòng bị xoá"), ("suppressed_cells", "Ô bị xoá")], exported),
-                       table("redaction", "Redaction free text", [("column", "Cột"), ("method", "Cách redact")], red),
-                       table("identifiers", "Quét định danh còn sót (pets-eval check)", [
-                           ("label", "Loại"), ("raw_hits", "Khớp pattern"), ("false_positives", "Dương tính giả"),
-                           ("residual", "Còn sót thật"), ("reason", "Giải thích")], ident)],
-            "issues": [{"level": "warning", "code": "not_approved", "message": "Export không được duyệt (--allow-unapproved)"}]
+                      {"label": "Approved release", "value": man.get("approved_release")},
+                      {"label": "Tables exported", "value": len(man.get("tables") or {})},
+                      {"label": "Tables withheld", "value": len(man.get("withheld_tables") or [])},
+                      {"label": "Checks passed", "value": f"{sum(c['status'] == 'passed' for c in checks)}/{len(checks)}"}],
+            "tables": [table("checks", "Checks on the written files", [("name", "Check"), ("status", "Result"),
+                                                                     ("problems", "Problems")], checks),
+                       table("exported", "Exported tables (protected/)", [
+                           ("table", "Table"), ("rows", "Rows"), ("columns", "Columns"),
+                           ("suppressed_rows", "Rows suppressed"), ("suppressed_cells", "Cells suppressed")], exported),
+                       table("redaction", "Free-text redaction", [("column", "Column"), ("method", "Method")], red),
+                       table("identifiers", "Residual identifier scan (pets-eval check)", [
+                           ("label", "Type"), ("raw_hits", "Pattern hits"), ("false_positives", "False positives"),
+                           ("residual", "Residual"), ("reason", "Explanation")], ident)],
+            "issues": [{"level": "warning", "code": "not_approved", "message": "Export is not an approved release (--allow-unapproved)"}]
             if man.get("approved_release") is False else []}
 
 
@@ -299,17 +299,17 @@ def view_evaluate(job: Path, ctx: dict) -> dict:
     rep = _json(tra / "reports" / "scorecard.json") if tra else None
     if rep is None:
         return {"stats": [], "tables": [], "issues": [{"level": "info", "code": "no_scorecard",
-                                                       "message": "Chưa có scorecard (Transform chưa chạy xong)."}]}
+                                                       "message": "No scorecard yet (transform has not finished)."}]}
     ours = summarise_scorecard(rep)
     ds, sc = ctx.get("dataset"), ctx.get("scenario")
     bench = ctx.get("benchmark", {})
     # our scorecard runs with the scenario, so its utility covers the scenario's tasks only: it is compared in the
     # scenario column, never against the baselines' all-task utility
-    rows = [{"method": "Ours (pipeline này)", **{k: _r(ours[k]) for k in ("privacy", "composite",
+    rows = [{"method": "Ours (this pipeline)", **{k: _r(ours[k]) for k in ("privacy", "composite",
                                                                           "worst_reid", "residual_identifiers")},
              "utility": None, "scenario_utility": _r(ours["utility"])}]
-    for name, key in (("B0: chỉ xoá định danh trực tiếp", "B0"), ("B2: SDC cổ điển", "B2"),
-                      ("B2-k: B2 + suppression k≥5", "B2K")):
+    for name, key in (("B0: drop direct identifiers", "B0"), ("B2: classic SDC", "B2"),
+                      ("B2-k: B2 + suppression to k≥5", "B2K")):
         b = bench.get(f"{key}_{ds}")
         if b:
             rows.append({"method": name, **{k: _r(b.get(k)) for k in ("privacy", "utility", "composite",
@@ -328,18 +328,18 @@ def view_evaluate(job: Path, ctx: dict) -> dict:
                       {"label": "Utility", "value": _r(ours["utility"], 3)},
                       {"label": "Composite", "value": _r(ours["composite"], 3)},
                       {"label": "Worst re-id", "value": _r(ours["worst_reid"], 3)}],
-            "tables": [table("compare", "So sánh với baseline của ban tổ chức", [
-                ("method", "Phương pháp"), ("privacy", "Privacy"), ("utility", "Utility (tất cả task)"),
+            "tables": [table("compare", "Comparison with the organisers' baselines", [
+                ("method", "Method"), ("privacy", "Privacy"), ("utility", "Utility (all tasks)"),
                 ("composite", "Composite"), ("worst_reid", "Worst re-id"),
-                ("residual_identifiers", "Định danh sót"), ("scenario_utility", f"Utility {sc or ''}")], rows,
-                note="Baseline từ results/benchmark.json (scorecard chạy không theo kịch bản); cột utility theo kịch "
-                     "bản dùng utility_by_scenario. Ours: reports/scorecard.json của Transform, tóm tắt bằng đúng "
-                     "công thức summarise() của baselines/run_all.py." if has_b else
-                "Không có baseline cho dataset này (chỉ có cho 9 dataset của package)."),
-                table("tasks", "Utility từng task", [("task", "Task"), ("description", "Mô tả"),
-                                                      ("required", "Kịch bản cần"), ("ours", "Ours"), ("b0", "B0"),
+                ("residual_identifiers", "Residual identifiers"), ("scenario_utility", f"Utility {sc or 'scenario'}")], rows,
+                note="Baselines from results/benchmark.json (scorecards run without a scenario); the scenario utility column uses "
+                     "utility_by_scenario. Ours: the transform's reports/scorecard.json, summarised with the same "
+                     "summarise() as baselines/run_all.py; our utility is per scenario, so it is compared in that column only." if has_b else
+                "No baseline for this dataset (baselines exist for the 9 package datasets only)."),
+                table("tasks", "Utility per task", [("task", "Task"), ("description", "Description"),
+                                                      ("required", "Required"), ("ours", "Ours"), ("b0", "B0"),
                                                       ("b2", "B2"), ("b2k", "B2-k")], tasks),
-                table("risks", "Thành phần rủi ro (scorecard)", [("component", "Thành phần"), ("risk", "Rủi ro")], risk)],
+                table("risks", "Risk components (scorecard)", [("component", "Component"), ("risk", "Risk")], risk)],
             "issues": [{"level": "info", "code": "self_assessment",
                         "message": rep["summary"].get("label", "self-assessment, not the official judging score")}]}
 
@@ -356,19 +356,19 @@ def summary(step: str, job: Path, ctx: dict) -> str:
         return ""
     st = {s["label"]: s["value"] for s in v["stats"]}
     if step == "input":
-        return f"{st.get('Bảng', 0)} bảng · {st.get('Dòng', 0):,} dòng · {st.get('Cột', 0)} cột"
+        return f"{st.get('Tables', 0)} tables · {st.get('Rows', 0):,} rows · {st.get('Columns', 0)} columns"
     if step == "detect":
-        return f"{st.get('Cột đã gán nhãn', 0)} cột · {st.get('Cần duyệt', 0)} cần duyệt · " \
-               f"{st.get('Span PII trong text', 0):,} span PII"
+        return f"{st.get('Columns labelled', 0)} columns · {st.get('Needs review', 0)} flagged for review · " \
+               f"{st.get('PII spans in text', 0):,} PII spans"
     if step == "review":
-        return f"{st.get('Đang chặn Select', 0)} cột đang chặn · {st.get('Đã xác nhận', 0)} đã xác nhận"
+        return f"{st.get('Blocking select', 0)} blocking · {st.get('Confirmed', 0)} confirmed"
     if step == "select":
         acts = " · ".join(f"{s['value']} {s['label']}" for s in v["stats"][3:])
-        return f"{st.get('Trạng thái', '')} · {acts}"
+        return f"{st.get('Status', '')} · {acts}"
     if step == "search":
-        return f"{st.get('Trạng thái', '')} · {st.get('Lượt đánh giá', '')} lượt"
+        return f"{st.get('Status', '')} · {st.get('Evaluations', '')} evaluations"
     if step == "transform":
-        return f"{st.get('Validation', '')} · {st.get('Bảng xuất', 0)} bảng xuất · checks {st.get('Checks đạt', '')}"
+        return f"{st.get('Validation', '')} · {st.get('Tables exported', 0)} tables exported · checks {st.get('Checks passed', '')}"
     if step == "evaluate":
         return f"privacy {st.get('Privacy')} · utility {st.get('Utility')} · composite {st.get('Composite')}"
     return ""
