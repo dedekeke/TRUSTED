@@ -12,6 +12,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import pets_detect.pipeline as v1_pipeline
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pets_detect_v3 import deploy  # noqa: E402
@@ -80,8 +82,11 @@ def pkg(tmp_path_factory):
 
 
 def _guarded(root: Path, allowed_data: Path):
-    """Fail on any open() under metadata/, truth/ or a data dir other than the input."""
-    banned = [root / "metadata", root / "truth"] + [p for p in (root / "data").iterdir() if p != allowed_data]
+    """Fail on any open() under metadata/, truth/ (of the test package and of the real package) or a data dir other
+    than the input."""
+    real_root = Path(v1_pipeline.DEFAULT_ROOT)
+    banned = [root / "metadata", root / "truth", real_root / "metadata", real_root / "truth"] + \
+        [p for p in (root / "data").iterdir() if p != allowed_data]
     real = builtins.open
 
     def guard(file, *a, **kw):
@@ -99,6 +104,7 @@ def test_infer_reads_only_model_and_input_and_matches_in_process(pkg, tmp_path, 
     guard = _guarded(root, data)
     monkeypatch.setattr(builtins, "open", guard)
     monkeypatch.setattr(io, "open", guard)
+    monkeypatch.setattr(v1_pipeline, "DEFAULT_ROOT", tmp_path / "no-such-package")
     man = deploy.infer(model, data, tmp_path / "detect")
     monkeypatch.undo()
 
@@ -128,6 +134,7 @@ def test_infer_reads_only_model_and_input_and_matches_in_process(pkg, tmp_path, 
         assert s["span_id"] == hashlib.sha256(key.encode()).hexdigest()[:16]
         assert set(s) == {"span_id", "table", "column", "row_index", "start", "end", "entity_type", "entity_id",
                           "confidence", "needs_review"}
+    assert man["artifacts"]["spans"]["columns"] == {"people.notes": {"cells": 120, "spans": len(spans)}}
     raw = (out / "spans.jsonl").read_text() + (out / "linkage.json").read_text()
     assert notes[0][8:20] not in raw
 
@@ -147,6 +154,35 @@ def test_infer_refuses_existing_out_and_tampered_model(pkg, tmp_path):
     (bad / "model.json").write_text((model / "model.json").read_text())
     with pytest.raises(ValueError, match="model_sha256"):
         deploy.infer(bad, root / "data" / "zz_beta", tmp_path / "o")
+
+
+def test_model_files_hold_no_training_values(pkg):
+    root, model = pkg
+    blob = b"".join(f.read_bytes() for f in model.iterdir())
+    values = set()
+    for f in (root / "data").glob("*/*.csv"):
+        df = pd.read_csv(f, dtype=str, keep_default_na=False)
+        for c in df.columns:
+            for v in df[c].unique():
+                values |= {v} | {w.lower().strip(".,") for w in v.split()}
+    leaked = sorted(v for v in values if len(v) >= 6 and v.encode() in blob)
+    assert not leaked, leaked[:10]
+
+
+def test_pinned_hash_is_checked_before_unpickling(pkg, tmp_path, monkeypatch, capsys):
+    root, model = pkg
+    monkeypatch.setattr(deploy.pickle, "loads", lambda b: pytest.fail("unpickled an unverified model"))
+    with pytest.raises(ValueError, match="pinned"):
+        deploy.load_model(model, "0" * 64)
+    monkeypatch.setenv("DETECT_MODEL_SHA256", "f" * 64)
+    with pytest.raises(ValueError, match="pinned"):
+        deploy.load_model(model)
+    monkeypatch.undo()
+    deploy.load_model(model)
+    assert "not pinned" in capsys.readouterr().err
+    sha = json.loads((model / "model.json").read_text())["model_sha256"]
+    deploy.load_model(model, sha)
+    assert "not pinned" not in capsys.readouterr().err
 
 
 def test_benchmark_scores_against_catalog(pkg, tmp_path):
