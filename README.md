@@ -134,7 +134,7 @@ From this repository root, using an explained Detect label artifact:
 
 ```bash
 python -m server.select select --data <package-root>/data/health --scenario HEALTH-S1 \
-  --labels <explained-detect-labels.csv> --out <fresh-plan-dir>
+  --labels <detect-out>/labels.csv --out <fresh-plan-dir>   # needs <detect-out>/manifest.json
 PRIVACY_TOOL_HMAC_KEY=... python -m server.select search --data <package-root>/data/health \
   --plan <fresh-plan-dir>/decisions.json --budget 50 --out <fresh-search-dir>
 ```
@@ -157,10 +157,37 @@ must be fresh. The key is supplied by `PRIVACY_TOOL_HMAC_KEY`, never stored in d
 
 | Status | Meaning | CLI exit |
 |---|---|---|
-| `ready_for_transform` | Initial policy-valid plan; privacy success unmeasured | 0 from select |
-| `blocked` | Named input, policy or required-label conflicts | 2 |
-| `measured_ok` | Measured candidate meets configured risk and utility targets | 0 from search |
-| `target_unmet` | Best measured candidate plus explicit conflicts/budget stop | 3 |
+| `policy_valid` | Initial plan within the rule matrix; privacy targets unmeasured; **not** an approved release | 0 from select |
+| `blocked` | Named input, policy, review, span or linkage conflicts (or a rejected artifact, nothing written) | 2 |
+| `measured_ok` | Measured candidate meets risk and utility targets; the only status with `outcome.approved: true` | 0 from search |
+| `target_unmet` | Search covered its allowed candidate space and no candidate meets the targets | 3 |
+| `budget_exhausted` | Budget ran out with unexplored candidates; never a claim of infeasibility | 4 |
+
+Every plan carries `outcome` = `{policy_valid, targets_met, approved, budget: {used, limit, exhausted, unexplored},
+targets, achieved, violations: [{metric, table, target, achieved, requirements}]}`.
+
+Named issue codes. Rejections (exit 2, no output): `manifest_missing`, `manifest_schema`, `dataset_mismatch`,
+`table_set_mismatch`, `input_mismatch` (names the table; one changed cell is enough), `fingerprint_mismatch`,
+`labels_mismatch`, `labels_schema` (bound labels need `needs_review`), `artifact_mismatch`, `artifact_missing`,
+`provenance_missing` (search/transform). Plan errors/warnings: `unsupported_label`, `review_required`, `stale_span`,
+`missing_span_evidence` (a needed free-text column absent from `artifacts.spans.columns`, or without spans when an
+older manifest has no such map), `missing_linkage_evidence` (an error when a released column is a join/subject
+key), `ambiguous_join`, `ambiguous_subject` (warning; selection keeps its own subject resolution) and
+`provenance_unbound` (search on a built-in-detector plan: `outcome.approved` stays false). Only 16-hex ids from
+artifacts are echoed; anything else is reported as `line N` / `relation N`.
+
+`transform` exports only an approved `measured_ok` plan and first re-checks the plan's input digests. Any other
+non-blocked status (`policy_valid`, `target_unmet`, `budget_exhausted`, unapproved `measured_ok`) needs
+`--allow-unapproved`; the gate is recorded in `transform_stats.json` (`release_gate`) and as
+`NOT_APPROVED.txt` in both output directories. `blocked` never exports.
+
+`select --labels <detect out>/labels.csv` requires the contract-v1 `manifest.json` next to it (or `--manifest`):
+raw-byte sha256 of every input CSV, the labels/spans/linkage digests and the label vocabulary. `decisions.json`
+gets `provenance` (input digests, dataset fingerprint, detector name/version/model digest, artifact digests,
+`confirm_sha256`) and `evidence` (span/linkage counts and relation ids only). `search` recomputes the input
+digests, rejects a plan made for other bytes and records `plan_sha256`. Without `--labels` the legacy detector
+plan is marked `provenance.bound: false`. `--confirm` rows are recorded as `reviews` (detected vs confirmed,
+`downgrade`); a required column whose label is uncertain and unconfirmed blocks with `review_required`.
 
 Search probes requirement floors at τ=0.8, then greedily coarsens one rung at a time, with deterministic
 ties and local suppression allowance ≤2%. At most 50 search evaluations are counted, including the utility
@@ -183,8 +210,8 @@ Tables are `dict[str, pandas.DataFrame]` read with `dtype=str, keep_default_na=F
 | `relations` | `discover(tables, labels=None, declared=None)` | `{"keys": [{"column", "unique_ratio", "null_rate"}], "joins": [{"parent", "child", "coverage", "orphans", "confidence"[, "declared"]}], "subject_keys": {table: "t.c"}, "subject_paths": {table: ["t.c", ...]}, "subject_key": "t.c" or None, "conflicts": [str], "notices": [str]}`. `subject_keys[t]` is the person column, possibly in a joined table (`subject_paths[t]` = child, parent, ..., subject). A table whose own key is a person id (one row per person) uses that key. Subject keys need labels: without them `subject_keys` is empty and `notices` says so. `declared = {"joins": [[parent, child]], "subject_key": "t.c"}` overrides discovery; problems go to `conflicts` |
 | `requirements` | `from_scenario(scenario_id, tables, root, probe=True, tolerance=0.05)`, `from_spec(path)`, `no_purpose(trust_level, dataset)` | `{"source", "scenario", "dataset", "trust_level", "targets", "targets_text", "tasks": [{"id", "table", "columns", "any_of", "precision", "evidence": {"declared", "parsed", "probed"}}], "required": {"t.c": [task ids]}, "any_of": [[["t.a"], ["t.b", "t.c"]]] (groups of alternatives, each a list of refs all needed), "precision": {"t.c": "hour"}, "joins": [{"columns", "tasks", "kind": "same_name" or "declared"}], "subject_key", "warnings"}`; select must confirm `same_name` joins with `relations.discover` before forcing a shared key domain |
 | `policy` | `candidates(label, trust_level, required, in_join=False, precision=None, k=None)`, `targets(trust_level, scenario_targets=None)`, `violations(label, rung, trust_level, k=None)` | `{"rungs": [{"action", "method", "params", "level"}] finest first, "needs_review", "escalate", "notes"}`; targets `{"k", "l"?, "free_text"?, "max_suppression", "notes"}` (notes list any loosening by the scenario); violations = breaches, accepting only DROP or a rung `candidates` offers. `METHODS` = operations `transform` must implement |
-| `select` | `select(tables, labels, relations, requirements, release_id=None)`, `confirm(labels, confirmed)`, `render(plan)` | Plan dict (`decisions.json`): `tables` (RELEASE/WITHHOLD + record_key), one `columns` entry per released source column (chosen rung + all `rungs`), `derived`, `domains`, `review_queue`, `warnings`, `errors`; status `ready_for_transform` or `blocked` |
-| `transform` | `check_plan(tables, plan)`, `apply(tables, plan, key, out_dir=None, eval_dir=None)` | Rule-matrix re-validation; `apply` is the legacy in-memory API over `server.actions.execute`, without the release gate. Use `server.transform` for releases |
+| `select` | `select(tables, labels, relations, requirements, release_id=None)`, `confirm(labels, confirmed)`, `render(plan)` | Plan dict (`decisions.json`): `tables` (RELEASE/WITHHOLD + record_key), one `columns` entry per released source column (chosen rung + all `rungs`), `derived`, `domains`, `review_queue`, `warnings`, `errors`; `reviews`, `label_coverage`, `outcome`; status `policy_valid` or `blocked` |
+| `transform` | `check_plan(tables, plan)`, `release_gate(plan, allow_unapproved=False)`, `apply(tables, plan, key, out_dir=None, eval_dir=None, allow_unapproved=False)` | Rule-matrix re-validation; the shared approval rule; `apply` is the legacy in-memory API over `server.actions.execute`. Use `python -m server.transform` for releases |
 | `search` | `search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8)` | Plan with chosen rungs, measured results and trace |
 
 
@@ -203,7 +230,7 @@ validation. Design and contracts: [server/transform.md](server/transform.md).
 ```bash
 PRIVACY_TOOL_HMAC_KEY=... python -m server.transform --data <package-root>/data/health \
   --plan <fresh-search-dir>/decisions.json --out <fresh-run-dir> \
-  [--spans clinical_notes.note_text=<detect-spans.jsonl>] [--text-fallback rules] [--no-scorecard]
+  [--detect <detect-out-dir>] [--text-fallback rules] [--allow-unapproved] [--no-scorecard]
 ```
 
 `python -m server.select transform` takes the same options and calls the same executor.
@@ -211,14 +238,17 @@ PRIVACY_TOOL_HMAC_KEY=... python -m server.transform --data <package-root>/data/
 | Exit | Status | Result |
 |---|---|---|
 | 0 | `validated` | `protected/` (recipient), `evaluation/` (owner-private copies, row maps, input manifest), `reports/`, `manifest.json` with `approved_release: true` |
-| 2 | `refused` | Preflight failed; only `diagnostics.json`/`.md` are written, no data |
+| 0 | `unapproved_export` | Only with `--allow-unapproved` for a non-blocked plan: same layout and checks (k/l/t and utility are recorded, not gating), `NOT_APPROVED.txt` in `protected/` and `evaluation/`, `approved_release: false` |
+| 2 | `refused` | Preflight failed; only `diagnostics.json`/`.md` are written, no data. Input-binding rejections (`[input_mismatch]`, `[stale_span]`, ...) print the code and write nothing |
 | 3 | `validation_failed` | Files stay private under `staging/`; `diagnostics.*` and a `failed` manifest name the failed checks |
 
-Preflight refuses any plan that is not `measured_ok`, has unresolved review items on released or required
-fields, lacks an explicit `--release-id`, or was made for different source values. Select stores a content
-digest (`input_digest`), so plans made before this change must be regenerated. Free-text columns need
-Detect span JSONL whose span text matches the current source. Without spans, the rule-only redactor must be
-chosen explicitly with `--text-fallback rules`. After writing, Transform reloads every file and checks:
+Before writing anything, Transform checks the plan's `provenance` against the input bytes (the same contract-v1
+binding as `search`), and, with `--detect`, the Detect manifest, the `spans.jsonl` sha256 and every
+`span_id`/offset. Preflight then refuses a plan that is not an approved `measured_ok` (`outcome.approved`
+needs provenance bound to a Detect manifest), has unresolved review items on released or required fields,
+or lacks an explicit `--release-id`. Free-text columns need Detect spans for that column; without them the
+rule-only redactor must be chosen explicitly with `--text-fallback rules`. After writing, Transform reloads
+every file and checks:
 - round trip and row maps
 - action output formats
 - join/orphan status

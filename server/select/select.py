@@ -1,7 +1,7 @@
 """Combine detection, relations, requirements and the rule matrix into one explained plan (decisions.json).
 
 The plan chooses the finest allowed rung per column; the measured search (server.select.search) may coarsen it.
-Status is `ready_for_transform` or `blocked` (with errors). Ready does not mean privacy-validated.
+Status is `policy_valid` or `blocked` (with errors). Policy-valid is not measured privacy and never an approval.
 The plan never contains key material, raw values, identifier-to-token maps or row maps.
 """
 from __future__ import annotations
@@ -12,13 +12,12 @@ import json
 import pandas as pd
 
 from . import policy
-from .detect import CONTEXT_QI
+from .detect import CONTEXT_QI, REVIEW_BELOW
 
 POLICY_VERSION = "dynamic-1"
 DETECTOR_VERSION = "detect-1"
 EVENT_SUBTYPES = ("TIMESTAMP", "DATE")
-ROLES = {"direct_identifier", "quasi_identifier", "sensitive_attribute", "technical_identifier", "free_text",
-         "record_key", "non_sensitive"}
+ROLES = policy.ROLES
 ID_ROLES = {"direct_identifier", "technical_identifier", "record_key"}
 MIN_JOIN_COVERAGE = 0.95
 
@@ -27,16 +26,6 @@ def fingerprint(tables: dict[str, pd.DataFrame]) -> str:
     """Schema + row counts (no values): transform refuses a plan made for other input."""
     shape = {t: [list(df.columns), len(df)] for t, df in sorted(tables.items())}
     return hashlib.sha256(json.dumps(shape).encode()).hexdigest()[:16]
-
-
-def input_digest(tables: dict[str, pd.DataFrame]) -> str:
-    """Owner-private content digest of every table (names, columns and values as read with the string/blank
-    contract). Transform refuses to execute a plan whose source values changed, even with the same schema."""
-    h = hashlib.sha256()
-    for t, df in sorted(tables.items()):
-        h.update(json.dumps([t, [str(c) for c in df.columns], len(df)]).encode())
-        h.update(df.astype(object).where(df.notna(), "").to_csv(index=False, header=False, lineterminator="\n").encode())
-    return h.hexdigest()
 
 
 def _ref(t, c):
@@ -109,7 +98,7 @@ def confirm(labels: pd.DataFrame, confirmed: pd.DataFrame, allow_downgrade: bool
     if confirmed.duplicated(["table", "column"]).any():
         raise ValueError("confirmation file lists a column twice")
     out = labels.copy()
-    for col in ("detected_role", "detected_subtype", "detected_confidence"):
+    for col in ("detected_role", "detected_subtype", "detected_confidence", "detected_needs_review"):
         if col not in out:
             out[col] = None
     for r in confirmed.to_dict("records"):
@@ -123,8 +112,9 @@ def confirm(labels: pd.DataFrame, confirmed: pd.DataFrame, allow_downgrade: bool
         if _downgrade(old.privacy_role, old.subtype, r["privacy_role"], r["subtype"]) and not allow_downgrade:
             raise ValueError(f"{ref}: refusing to downgrade {old.privacy_role}/{old.subtype} to {r['privacy_role']} "
                              "without allow_downgrade")
-        out.loc[m, ["detected_role", "detected_subtype", "detected_confidence"]] = \
-            [old.privacy_role, old.subtype, old.confidence]
+        out.loc[m, ["detected_role", "detected_subtype", "detected_confidence", "detected_needs_review"]] = \
+            [old.privacy_role, old.subtype, old.get("detector_confidence", old.confidence),
+             bool(old.get("detector_needs_review", False)) or float(old.confidence) < REVIEW_BELOW]
         out.loc[m, ["privacy_role", "subtype", "confidence", "evidence"]] = \
             [r["privacy_role"], r["subtype"], 1.0, f"confirmed by reviewer (detected {old.privacy_role}/{old.subtype})"]
     return out
@@ -193,7 +183,7 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
     # 3. person context crosses joins: place/time in a table linked to people is a quasi-identifier
     people = _person_tables(lab, relations)
     for ref, l in lab.items():
-        if _split(ref)[0] in people and l["privacy_role"] == "non_sensitive" and l["subtype"] in CONTEXT_QI:
+        if _split(ref)[0] in people and l["privacy_role"] == "non_sensitive" and l["subtype"] in CONTEXT_QI | {"URL"}:
             lab[ref] = {**l, "privacy_role": "quasi_identifier",
                         "evidence": f"{l.get('evidence', '')}; linked to people through a join"}
 
@@ -239,16 +229,23 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
                 errors.append(f"{ref} (required by {', '.join(required[ref])}): {cand['escalate']}")
             elif cand["escalate"]:
                 warnings.append(f"{ref}: {cand['escalate']}")
-            if req and rungs[0]["action"] == "DROP":
-                errors.append(f"{ref} is required by {', '.join(required[ref])} but its label is uncertain "
-                              f"(confidence {l.get('confidence')}); confirm it (--confirm) before release"
-                              if cand["needs_review"] else
-                              f"{ref} is required by {', '.join(required[ref])} but policy only allows DROP")
+            if cand["unsupported"]:
+                if req:
+                    errors.append(f"unsupported_label: {ref} (required by {', '.join(required[ref])}): "
+                                  f"{l['privacy_role']}/{l['subtype']}: {cand['unsupported']}")
+            elif req and cand.get("uncertain") and pd.isna(l.get("detected_role")):
+                errors.append(f"review_required: {ref} is required by {', '.join(required[ref])} but its label "
+                              f"{l['privacy_role']}/{l['subtype']} is uncertain (confidence {l.get('confidence')}"
+                              f"{', detector needs_review' if l.get('detector_needs_review') else ''}); "
+                              "confirm it (--confirm) before release")
+            elif req and rungs[0]["action"] == "DROP":
+                errors.append(f"{ref} is required by {', '.join(required[ref])} but policy only allows DROP")
             for r in rungs:
                 if r["action"] == "HMAC" and r["method"] == "hmac_sha256":
                     r["params"]["domain"] = doms.find(ref)
             if cand["needs_review"]:
-                review.append({"column": ref, "confidence": l.get("confidence"), "evidence": l.get("evidence", "")})
+                review.append({"column": ref, "confidence": l.get("confidence"), "evidence": l.get("evidence", ""),
+                               **({"issue": "unsupported_label"} if cand["unsupported"] else {})})
             chosen = rungs[0]
             why = (f"required by {', '.join(required[ref])}" if req else "join key" if in_join else
                    "no declared analysis needs it (minimisation)" if rungs[0]["action"] == "DROP" else
@@ -302,24 +299,63 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
     scope = requirements.get("scenario") or requirements.get("dataset") or "release"
     if not release_id:
         warnings.append("no release_id given: tokens are scoped to scenario/trust only; pass one per recipient")
-    return {
+    reviews = [{"table": r["table"], "column": r["column"],
+                "detected": {"role": r["detected_role"], "subtype": r["detected_subtype"],
+                             "confidence": float(r["detected_confidence"]),
+                             "needs_review": bool(r["detected_needs_review"])},
+                "confirmed": {"role": r["privacy_role"], "subtype": r["subtype"]},
+                "downgrade": _downgrade(r["detected_role"], r["detected_subtype"], r["privacy_role"], r["subtype"])}
+               for r in labels.to_dict("records") if pd.notna(r.get("detected_role"))]
+    plan = {
         "policy_version": POLICY_VERSION, "detector_version": DETECTOR_VERSION,
-        "input_fingerprint": fingerprint(tables), "input_digest": input_digest(tables),
+        "input_fingerprint": fingerprint(tables),
         "release_id": release_id or f"{scope}/{trust}", "release_id_explicit": bool(release_id),
-        "status": "blocked" if errors else "ready_for_transform",
+        "status": None,
         "source": requirements.get("source"), "scenario": requirements.get("scenario"),
         "dataset": requirements.get("dataset"), "trust_level": trust, "targets": tg,
         "tables": plan_tables, "columns": plan_cols, "derived": derived,
         "domains": domains, "joins": relations.get("joins", []), "subject_keys": relations.get("subject_keys", {}),
         "subject_key": relations.get("subject_key"), "required": required, "precision": precision,
-        "review_queue": review, "warnings": warnings, "errors": errors,
+        "review_queue": review, "reviews": reviews,
+        "label_coverage": policy.coverage(zip(labels["privacy_role"], labels["subtype"])),
+        "warnings": warnings, "errors": errors,
     }
+    return set_status(plan)
+
+
+def set_status(plan: dict) -> dict:
+    """Select outcome: policy_valid or blocked. Never approved: privacy targets are measured by search."""
+    plan["status"] = "blocked" if plan["errors"] else "policy_valid"
+    plan["outcome"] = {"policy_valid": not plan["errors"], "targets_met": False, "approved": False,
+                       "budget": {"used": 0, "limit": None, "exhausted": False, "unexplored": None},
+                       "targets": {k: v for k, v in plan["targets"].items() if k != "notes"},
+                       "achieved": {}, "violations": []}
+    return plan
+
+
+STATUS_TEXT = {
+    "policy_valid": "initial plan within the rule matrix; privacy targets not measured; not an approved release",
+    "blocked": "named conflicts must be resolved; nothing may be released",
+    "measured_ok": "the measured candidate meets the risk and utility targets",
+    "target_unmet": "the allowed candidate space was searched and no candidate meets the targets; not approved",
+    "budget_exhausted": "the evaluation budget ran out with unexplored candidates; this is not proof that the "
+                        "targets are infeasible; not approved",
+}
 
 
 def render(plan: dict) -> str:
     """Readable Markdown table of the same decisions (no values)."""
     lines = [f"# Release plan: {plan['scenario'] or plan['dataset']} ({plan['trust_level']})", "",
-             f"Status: **{plan['status']}**. Targets: {plan['targets']}", ""]
+             f"Status: **{plan['status']}**: {STATUS_TEXT.get(plan['status'], 'unknown status')}. "
+             f"Targets: {plan['targets']}", "",
+             f"Approved release: **{'yes' if (plan.get('outcome') or {}).get('approved') else 'no'}**"
+             + ("; provenance_unbound: the plan is not bound to a detect manifest (built-in detector), so it cannot "
+                "be approved" if "provenance_unbound" in (plan.get("outcome") or {}).get("issues", []) else ""), ""]
+    prov = plan.get("provenance")
+    if prov:
+        lines += [f"Provenance: {'bound to detect manifest' if prov.get('bound') else 'UNBOUND (legacy built-in detector)'}"
+                  f", dataset fingerprint {prov.get('dataset_fingerprint', '')[:16]}"
+                  + (f", plan sha256 {plan['plan_sha256'][:16]}" if plan.get("plan_sha256") else ""), ""]
     for kind in ("errors", "warnings"):
         if plan[kind]:
             lines += [f"## {kind.title()}", ""] + [f"- {x}" for x in plan[kind]] + [""]
@@ -342,8 +378,11 @@ def render(plan: dict) -> str:
                   f"- Evaluations: {measured['evaluations']}"]
         if plan.get('suppression'):
             lines.append(f"- Local suppression: {plan['suppression']}")
+        budget = (plan.get('outcome') or {}).get('budget') or {}
+        lines.append(f"- Budget: {budget.get('used')}/{budget.get('limit')} evaluations, "
+                     f"{budget.get('unexplored')} unexplored candidates")
         if plan.get('conflict'):
-            lines.append(f"- **Target unmet**: {plan['conflict']}")
+            lines.append(f"- **{plan['status']}**: {plan['conflict']}")
     if plan["review_queue"]:
         lines += ["", "## Needs review", ""] + [f"- {r['column']} (confidence {r['confidence']}): {r['evidence']}"
                                                for r in plan["review_queue"]]

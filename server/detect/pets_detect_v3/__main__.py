@@ -5,10 +5,16 @@
   python3 -m pets_detect_v3 ablation               # router / margin steps, no LLM, 3 views -> out/compare_v3/ablation.csv
   python3 -m pets_detect_v3 compare                # runs ONLY v3; v1/v2 come from out/compare/ -> out/reports_v3/
   python3 -m pets_detect_v3 report                 # rebuild out/reports_v3/ from saved results
+
+Deployment (see deploy.py):
+  python3 -m pets_detect_v3 train --root PKG --out <new model dir>             # training: reads the catalog
+  python3 -m pets_detect_v3 infer --model <model dir> --data PKG/data/<ds> --out <new dir> [--no-llm]
+  python3 -m pets_detect_v3 benchmark --root PKG --labels <dir>/labels.csv [--out score.json]  # evaluation only
 """
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -30,6 +36,7 @@ def score(pred, catalog, datasets=None):
 def run_variant(cfg: Config, root, datasets=None):
     d = DetectorV3(cfg, root)
     dss = datasets or d.labelled
+    d.prefit(dss)
     return pd.concat([d.detect(x) for x in dss], ignore_index=True), d
 
 
@@ -83,8 +90,39 @@ def main(argv=None):
     s = sub.add_parser("compare")
     s.add_argument("--no-llm", action="store_true")
     sub.add_parser("report")
+    s = sub.add_parser("train")
+    s.add_argument("--root", default=argparse.SUPPRESS)
+    s.add_argument("--out", required=True)
+    from .deploy import TRUST_WARNING
+    s = sub.add_parser("infer", description="Label one dataset from a trained model dir. " + TRUST_WARNING)
+    s.add_argument("--model", required=True)
+    s.add_argument("--model-sha256", help="pinned sha256 of model.pkl (or env DETECT_MODEL_SHA256); checked before "
+                                          "the pickle is loaded")
+    s.add_argument("--data", required=True)
+    s.add_argument("--out", required=True)
+    s.add_argument("--no-llm", action="store_true")
+    s = sub.add_parser("benchmark")
+    s.add_argument("--root", default=argparse.SUPPRESS)
+    s.add_argument("--labels", required=True)
+    s.add_argument("--datasets")
+    s.add_argument("--out")
     a = ap.parse_args(argv)
     root = Path(a.root) if a.root else None
+    if a.cmd in ("train", "infer", "benchmark"):
+        from . import deploy
+        if a.cmd == "train":
+            m = deploy.train(root, a.out)
+            print(f"model {m['model_sha256'][:12]} ({m['version']}) trained on {m['training_datasets']} -> {a.out}")
+        elif a.cmd == "infer":
+            m = deploy.infer(a.model, a.data, a.out, llm=not a.no_llm, model_sha256=a.model_sha256)
+            print(f"{m['dataset']} ({m['dataset_fingerprint'][:12]}) -> {a.out}")
+        else:
+            r = deploy.benchmark(root, a.labels, a.datasets.split(",") if a.datasets else None)
+            if a.out:
+                with open(a.out, "x") as fh:
+                    json.dump(r, fh, indent=1, default=str)
+            print(json.dumps({k: r[k] for k in ("macro_f1", "accuracy", "sensitive_recall", "subtype_accuracy")}))
+        return
     from . import compare
     if a.cmd in ("detect", "unseen"):
         cfg = replace(compare.FINAL, tiers=(1, 2) if a.no_llm else (1, 2, 3),

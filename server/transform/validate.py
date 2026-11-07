@@ -44,7 +44,7 @@ def round_trip(source, plan, frames, root: Path) -> tuple[dict, dict]:
     """Reload protected/ and evaluation/; compare with the executed frames and the source snapshot."""
     problems, reloaded = [], {}
     released = sorted(t for t, d in plan["tables"].items() if d["action"] == "RELEASE")
-    files = {p.name for p in (root / "protected").iterdir()}
+    files = {p.name for p in (root / "protected").iterdir() if p.name != "NOT_APPROVED.txt"}
     expected = {f"{t}.csv" for t in released}
     if files != expected:
         problems.append(f"protected/ holds {sorted(files - expected)} unexpected, {sorted(expected - files)} missing")

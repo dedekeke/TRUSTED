@@ -1,10 +1,12 @@
 """CLI.
 
   python -m server.transform --data <dataset dir> --plan <measured decisions.json> --out <new dir>
-                             [--spans TABLE.COLUMN=FILE ...] [--text-fallback rules] [--no-scorecard]
+                             [--detect <detect output dir>] [--text-fallback rules] [--allow-unapproved]
+                             [--no-scorecard]
 
 The HMAC key is read from the PRIVACY_TOOL_HMAC_KEY environment variable and never written.
-Exit codes: 0 validated release, 2 refused before export, 3 exported files failed validation (kept private).
+Exit codes: 0 validated release (or a marked --allow-unapproved export), 2 refused or input binding rejected
+([code] on stderr, nothing written), 3 exported files failed validation (kept private).
 """
 from __future__ import annotations
 
@@ -14,10 +16,12 @@ import os
 import sys
 from pathlib import Path
 
+from server.select.artifacts import ArtifactError
+
 from .run import run
 
 KEY_ENV = "PRIVACY_TOOL_HMAC_KEY"
-EXIT = {"validated": 0, "refused": 2, "validation_failed": 3}
+EXIT = {"validated": 0, "unapproved_export": 0, "refused": 2, "validation_failed": 3}
 
 
 def _tasks(plan, data):
@@ -36,10 +40,11 @@ def main(argv=None) -> int:
     ap.add_argument("--data", required=True, help="source dataset directory (read-only)")
     ap.add_argument("--plan", required=True, help="decisions.json from `server.select search` (status measured_ok)")
     ap.add_argument("--out", required=True, help="new run directory; must not exist")
-    ap.add_argument("--spans", action="append", default=[], metavar="TABLE.COLUMN=FILE",
-                    help="Detect span JSONL for a free-text column (repeatable)")
+    ap.add_argument("--detect", help="detect output dir (manifest.json + spans.jsonl) for free-text redaction")
     ap.add_argument("--text-fallback", choices=["rules"],
                     help="explicitly allow rule-only redaction for free text without Detect spans")
+    ap.add_argument("--allow-unapproved", action="store_true",
+                    help="export a plan that is not an approved measured_ok release; marked NOT_APPROVED")
     ap.add_argument("--no-scorecard", action="store_true", help="skip the toolkit scorecard (marked not run)")
     ap.add_argument("--max-adversary", type=int, default=3000)
     a = ap.parse_args(argv)
@@ -47,22 +52,23 @@ def main(argv=None) -> int:
     key = os.environ.get(KEY_ENV, "").encode()
     if not key:
         sys.exit(f"set {KEY_ENV} (the HMAC key) in the environment")
-    spans = {}
-    for item in a.spans:
-        ref, sep, path = item.partition("=")
-        if not sep or "." not in ref or not path:
-            sys.exit(f"--spans expects TABLE.COLUMN=FILE, got {item!r}")
-        spans[ref] = path
-    plan = json.loads(Path(a.plan).read_text(encoding="utf-8"))
+    plan_bytes = Path(a.plan).read_bytes()
+    plan = json.loads(plan_bytes)
     try:
         tasks, orig = _tasks(plan, a.data)
-        res = run(a.data, plan, key, a.out, spans, text_fallback=a.text_fallback == "rules",
-                  scorecard=not a.no_scorecard, tasks=tasks, orig=orig, max_adversary=a.max_adversary)
+        res = run(a.data, plan, key, a.out, a.detect, text_fallback=a.text_fallback == "rules",
+                  allow_unapproved=a.allow_unapproved, scorecard=not a.no_scorecard, tasks=tasks, orig=orig,
+                  max_adversary=a.max_adversary, plan_bytes=plan_bytes)
+    except ArtifactError as e:
+        print(f"rejected: {e}", file=sys.stderr)
+        return EXIT["refused"]
     except (FileExistsError, ValueError) as e:
         sys.exit(str(e))
     print(f"{res['status']} -> {res['out']}")
     if res["status"] == "validated":
         print(f"  shareable: {res['out']}/protected   owner-private: {res['out']}/evaluation")
+    elif res["status"] == "unapproved_export":
+        print("  NOT AN APPROVED RELEASE (--allow-unapproved): marked NOT_APPROVED.txt; do not share")
     for e in res.get("errors", [])[:20]:
         print("  ", e)
     return EXIT[res["status"]]

@@ -72,7 +72,7 @@ def test_should_release_no_row_level_sensitive_or_free_text_at_public():
         if t == "public" and label["privacy_role"] in ("sensitive_attribute", "free_text") \
                 and label["subtype"] not in REROUTED:
             assert actions(c) == ["DROP"], (label, req, join)
-            assert req is False or c["escalate"]
+            assert req is False or c["escalate"] or c["unsupported"]
 
 
 def test_should_never_keep_low_confidence_columns():

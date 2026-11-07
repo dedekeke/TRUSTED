@@ -42,7 +42,7 @@ flowchart TD
 1. Validate the plan version, schema, all column decisions, derived-column collisions, allowed methods,
    parameter ranges, join domains and selected suppression budgets. Reject unsupported operations before writing.
 2. Approved release export requires `measured_ok` and no unresolved review issue affecting a released/required
-   field. `ready_for_transform` only means policy-valid. `blocked` and `target_unmet` produce diagnostics,
+   field. `policy_valid` only means policy-valid; approval also needs `outcome.approved` (provenance bound to Detect). `blocked` and `target_unmet` produce diagnostics,
    not a directory represented as an approved release. Dropped-only review items remain informational.
 3. Bind Detect/Select artifacts to the source revision. The current schema/row-count fingerprint cannot
    detect changed values. Extend the handoff with an owner-private input digest/revision and verify it

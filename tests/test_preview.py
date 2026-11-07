@@ -18,12 +18,13 @@ def test_legacy_export_command_delegates_to_the_gated_executor(tmp_path, monkeyp
     """The old `server.select transform` no longer has its own export path: unmeasured plans are refused."""
     import json
     from server.select.__main__ import main
+    from server.select.artifacts import provenance
     data = tmp_path / 'demo'
     data.mkdir()
     pd.DataFrame({'id': ['1']}).to_csv(data / 't.csv', index=False)
     plan_path = tmp_path / 'plan.json'
-    plan_path.write_text(json.dumps({'status': 'ready_for_transform', 'tables': {}, 'columns': [],
-                                     'suppression': {'t': {'k': 5}}}))
+    plan_path.write_text(json.dumps({'status': 'policy_valid', 'tables': {}, 'columns': [],
+                                     'suppression': {'t': {'k': 5}}, 'provenance': provenance(data, None)}))
     monkeypatch.setenv('PRIVACY_TOOL_HMAC_KEY', 'test-key')
     out = tmp_path / 'export'
     assert main(['transform', '--data', str(data), '--plan', str(plan_path), '--out', str(out), '--no-scorecard']) == 2

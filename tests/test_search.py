@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from server.select.search import _Evaluator, search
-from server.select.select import select
+from server.select.select import render, select
 
 KEY = b"test-key"
 
@@ -99,8 +99,43 @@ def test_invalid_budget_rejected(budget):
 def test_every_evaluation_traced_and_budgeted():
     out = run(budget=3)
     assert out['measured']['evaluations'] == len(out['search_trace']) == 3
+    assert out['status'] == 'budget_exhausted'
+    assert 'not a proof of infeasibility' in out['conflict']['reason']
+    o = out['outcome']
+    assert o['approved'] is False and o['targets_met'] is False
+    assert o['budget']['used'] == o['budget']['limit'] == 3 and o['budget']['exhausted'] and o['budget']['unexplored'] > 0
+
+
+def test_target_unmet_only_when_candidate_space_covered():
+    tables, labels, rel, req = inputs(40)
+    tables['visits']['pid'] = 'one-person'
+    out = search(tables, select(tables, labels, rel, req), KEY)
     assert out['status'] == 'target_unmet'
-    assert 'budget' in out['conflict']['reason']
+    o = out['outcome']
+    assert o['budget']['unexplored'] == 0 and not o['budget']['exhausted'] and o['approved'] is False
+    k = next(v for v in o['violations'] if v['metric'] == 'k')
+    assert k['table'] == 'visits' and k['target'] == 5 and k['achieved'] == 1
+    assert k['requirements'] == ['CITY', 'HOUR']
+    assert 'not approved' in render(out) and 'Approved release: **no**' in render(out)
+
+
+def test_measured_ok_is_the_only_approved_status():
+    tables, labels, rel, req = inputs()
+    req['targets'] = {'k': 1}
+    plan = select(tables, labels, rel, req)
+    out = search(tables, {**plan, 'provenance': {'bound': True}}, KEY, [hour_task(), big_city_task()], tables)
+    assert out['status'] == 'measured_ok'
+    assert out['outcome']['approved'] is True and out['outcome']['targets_met'] and out['outcome']['violations'] == []
+    assert 'Approved release: **yes**' in render(out)
+
+
+def test_unbound_plan_is_never_approved():
+    tables, labels, rel, req = inputs()
+    req['targets'] = {'k': 1}
+    out = search(tables, select(tables, labels, rel, req), KEY, [hour_task(), big_city_task()], tables)
+    assert out['status'] == 'measured_ok' and out['outcome']['approved'] is False
+    assert out['outcome']['issues'] == ['provenance_unbound']
+    assert 'provenance_unbound' in render(out) and 'Approved release: **no**' in render(out)
 
 
 def test_no_tasks_uses_information_loss_and_preserves_unknown_subjects():
@@ -377,6 +412,8 @@ def test_search_cli_writes_decisions_and_diagnostics_without_export(tmp_path, mo
     data = tmp_path / 'data'
     data.mkdir()
     tables['visits'].to_csv(data / 'visits.csv', index=False)
+    from server.select.artifacts import provenance
+    plan['provenance'] = provenance(data, None)
     plan_path = tmp_path / 'plan.json'
     plan_path.write_text(json.dumps(plan))
     def no_export(*args, **kwargs):
@@ -385,8 +422,25 @@ def test_search_cli_writes_decisions_and_diagnostics_without_export(tmp_path, mo
     monkeypatch.setenv('PRIVACY_TOOL_HMAC_KEY', 'test-key')
     out = tmp_path / 'search'
     assert main(['search', '--data', str(data), '--plan', str(plan_path),
-                 '--out', str(out), '--budget', '2']) == 3
+                 '--out', str(out), '--budget', '2']) == 4
     measured = json.loads((out / 'decisions.json').read_text())
-    assert measured['measured']['evaluations'] == 2
+    assert measured['measured']['evaluations'] == 2 and measured['status'] == 'budget_exhausted'
+    assert measured['provenance']['bound'] is False and len(measured['plan_sha256']) == 64
+    assert measured['outcome']['approved'] is False and 'provenance_unbound' in measured['outcome']['issues']
     assert {p.name for p in out.iterdir()} == {'decisions.json', 'decisions.md'}
     assert 'unresolved subject identity' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('t, tried', [(None, False), (0.0, True)])
+def test_greedy_skips_sensitive_steps_unless_t_is_a_target(t, tried):
+    tables, labels, rel, req = inputs(400)
+    labels.loc[labels.column == 'score', ['privacy_role', 'subtype']] = ['sensitive_attribute', 'MEASUREMENT']
+    req.update(source='spec', precision={}, required={'visits.arrival': ['HOUR'], 'visits.city': ['CITY'],
+                                                      'visits.score': ['SCORE']},
+               targets={'k': 50, 'l': 2, **({} if t is None else {'t': t})})
+    out = search(tables, select(tables, labels, rel, req), KEY)
+    greedy = [e['changed_column'] for e in out['search_trace'] if e['phase'] == 'greedy']
+    assert greedy and ('visits.score' in greedy) is tried
+    # the budget goes to quasi-identifier rungs: every allowed city rung is reached in combination
+    if not tried:
+        assert max(e['levels']['visits.city'] for e in out['search_trace'] if e['phase'] == 'greedy') == 3

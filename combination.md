@@ -18,8 +18,8 @@ flowchart TD
     P -->|policy-valid| I[Initial decisions.json]
     I --> M[Search candidates in memory: floors, greedy steps, suppression]
     M --> K[Owner-data k/l/t and uniqueness by subject, plus required-task utility]
-    K --> O[Chosen plan and trace: measured_ok or target_unmet]
-    O -->|measured_ok only| X[Transform: execute, stage, validate serialized files, publish]
+    K --> O[Chosen plan and trace: measured_ok, target_unmet or budget_exhausted]
+    O -->|approved measured_ok only| X[Transform: execute, stage, validate serialized files, publish]
     X -->|refused or failed| Z[Diagnostics; no approved release]
 ```
 
@@ -57,7 +57,7 @@ Detect's additional dependencies are listed in `server/detect/requirements.txt`.
 
    ```bash
    python -m server.select select --data <package-root>/data/health \
-     --scenario HEALTH-S1 --labels <fresh-labels.csv> --out <fresh-plan-dir>
+     --scenario HEALTH-S1 --labels <detect-out>/labels.csv --out <fresh-plan-dir>
    ```
 
 3. Resolve any named required-label blocks through reviewed `--confirm` labels. Then measure the plan:
@@ -68,8 +68,10 @@ Detect's additional dependencies are listed in `server/detect/requirements.txt`.
      --budget 50 --out <fresh-search-dir>
    ```
 
-Use fresh directories for every run. `ready_for_transform` is an initial policy-valid plan, not measured
-privacy success. Search exits 0 for `measured_ok` and 3 for `target_unmet`; selection exits 2 for `blocked`.
+Use fresh directories for every run. `policy_valid` is an initial plan, not measured privacy success and never
+an approval. Search exits 0 for `measured_ok` (the only `outcome.approved: true`), 3 for `target_unmet` (allowed
+candidate space covered) and 4 for `budget_exhausted` (unexplored candidates remain; not a proof of
+infeasibility); `blocked` and rejected artifacts exit 2. See README.md for the issue codes and `outcome` block.
 No training catalog, `truth/` or gold spans are needed by selection.
 
 ## Gaps and expectations
@@ -77,9 +79,9 @@ No training catalog, `truth/` or gold spans are needed by selection.
 | Gap | What remains / expected behavior |
 |---|---|
 | Detector deployment | Detect v3 currently loads `metadata/field_catalog.csv` and training profiles in its constructor. It needs a separately trained, frozen model/vocabulary loader before serving catalog-free production inference. Selection consumes saved labels and must not invoke that training path. |
-| Artifact provenance | The label adapter checks schema, dataset and confidence, not whether labels describe the same data revision. Plans now carry a content `input_digest`; Transform refuses changed source values, and spans must match the current text. Detector label artifacts are still not bound to a revision. |
-| Spans and linkage | Transform consumes Detect span JSONL (`--spans`) after validating offsets and text against the source. Entity-consistent pseudonyms are not implemented: the policy only offers typed placeholders. The linkage report is not consumed; Selection recomputes joins and distinct-subject risk. |
-| Confidence and subtype coverage | Review flags remain actionable. Unknown or unsupported policy precision must block/drop for review, not fall back to raw KEEP. The statistical detector's subtype quality is not established by schema validation alone. |
+| Artifact provenance | `select --labels` requires the contract-v1 manifest and rejects other input bytes, labels or dataset revisions by name; `search` re-checks the plan's input digests and records `plan_sha256`. The legacy built-in detector path is marked unbound. |
+| Spans and linkage | Selection validates `spans.jsonl`/`linkage.json` (`stale_span`, `missing_span_evidence`, `ambiguous_join`, `ambiguous_subject`) and keeps only counts/ids. Selection still recomputes its own joins and distinct-subject risk; detector row-count risk is not a substitute. Transform reads the same `spans.jsonl` through `--detect <dir>`, re-checking the manifest, `span_id` and offsets against the input bytes. |
+| Confidence and subtype coverage | Every emitted and vocabulary (role, subtype) pair maps to a protective policy or `unsupported_label` (DROP + review; blocks when required). Unconfirmed uncertain required labels block with `review_required`. The statistical detector's subtype quality is not established by schema validation alone. |
 | HEALTH-S1 privacy | The prior 50-evaluation selection result remains `target_unmet`: 12.98% of known visit subject/class contributions below k=5, l failures, and missing subjects in 921 visits / 2,205 linked lab rows. More search does not repair missing identities. These figures are historical selection evidence, not a fresh Detect-v3 benchmark. |
 | UI/API | The frontend still uses local/static data and browser-side services. This combination connects backend Python stages through files; a backend API and frontend wiring are not implemented here. |
 | Release approval | A valid/exportable plan is not evidence that privacy targets are met. Do not present a `target_unmet` result as an approved release. Budget exhaustion is not a proof that every plan fails. |

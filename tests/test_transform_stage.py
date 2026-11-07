@@ -1,5 +1,8 @@
-"""Final Transform stage: release gate, staged export, serialized validation. Artificial data only."""
+"""Final Transform stage: release gate, staged export, serialized validation. Artificial data only.
+
+Plans are bound exactly as in a real run: data dir -> Detect output dir (contract v1) -> provenance -> search."""
 import json
+import shutil
 from copy import deepcopy
 
 import numpy as np
@@ -7,18 +10,20 @@ import pandas as pd
 import pytest
 
 from server.actions import execute
+from server.select import artifacts as A
 from server.select.search import _Evaluator, search
-from server.select.select import input_digest, select
+from server.select.select import select
 from server.transform import validate
 from server.transform.files import read_csv, write_csv
-from server.transform.run import run
+from server.transform.run import read_tables, run
+from tests.contract_fixture import fingerprint, span, write_detect_dir
 
 KEY = b"test-only-transform-key"
 
 
 def lab(t, c, role, sub, conf=0.95, ev="test; person table"):
     return {"dataset": "demo", "table": t, "column": c, "privacy_role": role, "subtype": sub, "confidence": conf,
-            "evidence": ev}
+            "evidence": ev, "needs_review": "False"}
 
 
 def demo(n=300):
@@ -50,42 +55,50 @@ def demo(n=300):
     return {"visits": visits, "labs": labs}, labels, rel, req
 
 
-@pytest.fixture(scope="module")
-def measured():
-    tables, labels, rel, req = demo()
-    plan = search(tables, select(tables, labels, rel, req, release_id="demo/recipient-a"), KEY)
-    assert plan["status"] == "measured_ok", plan.get("conflict")
-    return tables, plan
+def note_spans(data, text=None):
+    """One PERSON span over 'Anna Virtanen' in every note, in Detect contract v1 format."""
+    _, fp = fingerprint(data)
+    notes = read_tables(data)["visits"]["note"]
+    return [span(fp, "visits", "note", i, 0, 13, entity_id=f"visits:note:{i}:P1") for i in range(len(notes))]
 
 
-def write_data(tmp_path, tables, name="demo"):
-    data = tmp_path / name
-    data.mkdir()
+def write_data(root, tables, name="demo"):
+    data = root / name
+    data.mkdir(parents=True)
     for t, df in tables.items():
         df.to_csv(data / f"{t}.csv", index=False)
     return data
 
 
-def write_spans(path, visits, end=13, text=None):
-    with open(path, "w", encoding="utf-8") as fh:
-        for vid, note in zip(visits.vid, visits.note):
-            fh.write(json.dumps({"record_id": vid, "spans": [
-                {"start": 0, "end": end, "label": "PERSON", "text": note[:end] if text is None else text,
-                 "confidence": .99, "entity_id": "P1"}]}) + "\n")
-    return path
+def bound_plan(root, tables, labels, rel, req, spans=True, release_id="demo/recipient-a", **search_kw):
+    """data + detect dir + select (bound provenance) + search, as the CLI would do."""
+    data = write_data(root, tables)
+    lab_path = write_detect_dir(root / "detect", data, labels, note_spans(data) if spans else [])
+    manifest = A.load_manifest(lab_path, data, "demo")
+    read = read_tables(data)
+    plan = select(read, labels, rel, req, release_id=release_id)
+    plan["provenance"] = A.provenance(data, manifest)
+    return data, root / "detect", search(read, plan, KEY, **search_kw)
 
 
-def release(tmp_path, tables, plan, **kw):
-    data = write_data(tmp_path, tables)
-    if "spans_files" not in kw:
-        kw["spans_files"] = {"visits.note": write_spans(tmp_path / "spans.jsonl", tables["visits"])}
+@pytest.fixture(scope="module")
+def measured(tmp_path_factory):
+    tables, labels, rel, req = demo()
+    data, detect, plan = bound_plan(tmp_path_factory.mktemp("bound"), tables, labels, rel, req)
+    assert plan["status"] == "measured_ok" and plan["outcome"]["approved"], plan.get("conflict")
+    return data, detect, plan
+
+
+def release(tmp_path, measured, plan=None, **kw):
+    data, detect, base = measured
+    kw.setdefault("detect_dir", detect)
     kw.setdefault("scorecard", False)
-    return run(data, plan, KEY, tmp_path / "run", **kw), tmp_path / "run"
+    return run(data, plan or base, KEY, tmp_path / "run", **kw), tmp_path / "run"
 
 
 def test_validated_release_layout_and_formats(tmp_path, measured):
-    tables, plan = measured
-    res, out = release(tmp_path, tables, plan)
+    data, _, plan = measured
+    res, out = release(tmp_path, measured)
     assert res["status"] == "validated", res.get("errors")
     assert all(c["status"] in ("passed", "not_run") for c in res["checks"])
     assert {p.name for p in out.iterdir()} == {"decisions.json", "decisions.md", "manifest.json", "transform_stats.json",
@@ -97,15 +110,18 @@ def test_validated_release_layout_and_formats(tmp_path, measured):
     assert list(v.columns) == ["vid", "arrival", "city", "note", "age"]  # retained source order, then derived
     assert v.vid.str.fullmatch(r"[0-9a-f]{32}").all() and len(v) == 300
     assert v.arrival.str.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:00").all()
-    assert v.note[0] == '[PERSON], "kipu"\nsoitti 0'  # quoted multiline text round-trips
+    assert v.note[0] == '[PERSON], "kipu"\nsoitti 0'  # Detect span applied; quoted multiline text round-trips
     assert set(read_csv(out / "protected" / "labs.csv").vid) == set(v.vid)  # shared token domain
     rm = read_csv(out / "evaluation" / "rowmap_visits.csv")
     assert rm.original_record_id[0] == "000000" and rm.protected_row.tolist()[:3] == ["0", "1", "2"]  # leading zeros
     m = json.loads((out / "manifest.json").read_text())
     assert m["validation_status"] == "validated" and m["approved_release"] and m["selection_status"] == "measured_ok"
     assert m["tables"]["visits"]["file"] == "protected/visits.csv" and len(m["tables"]["visits"]["sha256"]) == 64
-    assert "input_digest" not in json.dumps(m) and "input_digest" not in (out / "decisions.json").read_text()
-    assert json.loads((out / "evaluation" / "input_manifest.json").read_text())["input_digest"] == plan["input_digest"]
+    assert "provenance" not in json.dumps(m)  # source digests stay in the private input manifest
+    private = json.loads((out / "evaluation" / "input_manifest.json").read_text())
+    assert private["provenance"]["dataset_fingerprint"] == fingerprint(data)[1]
+    assert private["detect"]["spans_sha256"] == plan["provenance"]["spans_sha256"]
+    assert json.loads((out / "transform_stats.json").read_text())["redaction"] == {"visits.note": "detect_spans+rules"}
     scan = json.loads((out / "reports" / "identifier_check.json").read_text())
     assert scan["unexplained"] == {} and "examples" not in scan
     for f in (p for p in out.rglob("*") if p.is_file()):
@@ -113,96 +129,123 @@ def test_validated_release_layout_and_formats(tmp_path, measured):
 
 
 def test_no_raw_source_values_in_shareable_or_report_files(tmp_path, measured):
-    tables, plan = measured
-    _, out = release(tmp_path, tables, plan)
-    raw = set(tables["visits"].pid) | set(tables["visits"].dob) | set(tables["visits"].vid)
+    data, _, _ = measured
+    _, out = release(tmp_path, measured)
+    src = read_tables(data)["visits"]
+    raw = set(src.pid) | set(src.dob) | set(src.vid)
     for f in [*(out / "protected").iterdir(), *(out / "reports").iterdir(), out / "manifest.json"]:
         text = f.read_text(encoding="utf-8")
         assert "Anna Virtanen" not in text, f.name
         assert not any(f",{v}," in text or f"\n{v}," in text or f'"{v}"' in text for v in raw), f.name
 
 
-@pytest.mark.parametrize("status,match", [("target_unmet", "target_unmet"), ("ready_for_transform", "not measured"),
-                                          ("blocked", "blocked")])
-def test_unapproved_plans_are_refused_without_export(tmp_path, measured, status, match):
-    tables, plan = measured
-    res, out = release(tmp_path, tables, {**plan, "status": status})
+@pytest.mark.parametrize("status,outcome,match", [
+    ("target_unmet", {"approved": False}, "target_unmet"), ("policy_valid", {}, "not measured"),
+    ("budget_exhausted", {"approved": False}, "budget_exhausted"), ("blocked", {}, "blocked"),
+    ("measured_ok", {"approved": False, "issues": ["provenance_unbound"]}, "provenance_unbound")])
+def test_unapproved_plans_are_refused_without_export(tmp_path, measured, status, outcome, match):
+    _, _, plan = measured
+    res, out = release(tmp_path, measured, {**plan, "status": status, "outcome": outcome})
     assert res["status"] == "refused" and any(match in e for e in res["errors"])
     assert sorted(p.name for p in out.iterdir()) == ["diagnostics.json", "diagnostics.md"]
     assert json.loads((out / "diagnostics.json").read_text())["approved_release"] is False
 
 
-def test_changed_source_values_with_same_schema_are_refused(tmp_path, measured):
-    tables, plan = measured
-    changed = deepcopy(tables)
-    changed["visits"].loc[0, "city"] = "Salo" if tables["visits"].city[0] != "Salo" else "Turku"
-    res, _ = release(tmp_path, changed, plan)
-    assert res["status"] == "refused" and any("digest mismatch" in e for e in res["errors"])
-    (tmp_path / "old").mkdir()
-    res2, _ = release(tmp_path / "old", tables, {k: v for k, v in plan.items() if k != "input_digest"})
-    assert res2["status"] == "refused" and any("no input_digest" in e for e in res2["errors"])
+def test_allow_unapproved_exports_marked_and_still_validated(tmp_path, measured):
+    _, _, plan = measured
+    res, out = release(tmp_path, measured, {**plan, "status": "target_unmet", "outcome": {"approved": False}},
+                       allow_unapproved=True)
+    assert res["status"] == "unapproved_export", res.get("errors")
+    assert "NOT AN APPROVED RELEASE" in (out / "protected" / "NOT_APPROVED.txt").read_text()
+    m = json.loads((out / "manifest.json").read_text())
+    assert m["approved_release"] is False and m["validation_status"] == "unapproved_export"
+    gate = json.loads((out / "transform_stats.json").read_text())["release_gate"]
+    assert gate["approved"] is False and gate["allow_unapproved"] is True and len(gate["plan_sha256"]) == 64
+    res, out = release(tmp_path / "b", measured, {**plan, "status": "blocked"}, allow_unapproved=True)
+    assert res["status"] == "refused"
+
+
+def test_changed_source_bytes_are_rejected_before_any_output(tmp_path, measured):
+    data, detect, plan = measured
+    changed = tmp_path / "demo"
+    shutil.copytree(data, changed)
+    text = (changed / "visits.csv").read_text()
+    (changed / "visits.csv").write_text(text.replace("Turku", "Salo", 1))
+    with pytest.raises(A.ArtifactError, match="input_mismatch"):
+        run(changed, plan, KEY, tmp_path / "run", detect, scorecard=False)
+    assert not (tmp_path / "run").exists()
+    unbound = {k: v for k, v in plan.items() if k != "provenance"}
+    with pytest.raises(A.ArtifactError, match="provenance_missing"):
+        run(data, unbound, KEY, tmp_path / "run2", detect, scorecard=False)
 
 
 def test_release_id_must_be_explicit(tmp_path, measured):
-    tables, plan = measured
-    res, _ = release(tmp_path, tables, {**plan, "release_id_explicit": False})
+    _, _, plan = measured
+    res, _ = release(tmp_path, measured, {**plan, "release_id_explicit": False})
     assert any("explicit recipient-scoped release_id" in e for e in res["errors"])
 
 
-def test_free_text_needs_spans_or_explicit_rule_fallback(tmp_path, measured):
-    tables, plan = measured
-    res, _ = release(tmp_path, tables, plan, spans_files={})
+def test_free_text_needs_detect_spans_or_explicit_rule_fallback(tmp_path, measured):
+    res, _ = release(tmp_path, measured, detect_dir=None)
     assert res["status"] == "refused" and any("--text-fallback rules" in e for e in res["errors"])
-    (tmp_path / "b").mkdir()
-    res, out = release(tmp_path / "b", tables, plan, spans_files={}, text_fallback=True)
+    res, out = release(tmp_path / "b", measured, detect_dir=None, text_fallback=True)
     assert res["status"] == "validated"
     assert json.loads((out / "transform_stats.json").read_text())["redaction"] == {"visits.note": "rules_only"}
 
 
-@pytest.mark.parametrize("kind", ["stale", "offsets", "unknown", "missing"])
-def test_invalid_spans_are_rejected(tmp_path, measured, kind):
-    tables, plan = measured
-    path = tmp_path / "spans.jsonl"
-    if kind == "stale":
-        write_spans(path, tables["visits"], text="Someone Else!")
-    elif kind == "offsets":
-        write_spans(path, tables["visits"], end=10_000)
+@pytest.mark.parametrize("breakage,code", [("offsets", "stale_span"), ("span_id", "stale_span"),
+                                           ("tampered", "artifact_mismatch"), ("other_data", "fingerprint_mismatch")])
+def test_invalid_detect_spans_are_rejected(tmp_path, measured, breakage, code):
+    data, detect, plan = measured
+    bad = tmp_path / "detect"
+    shutil.copytree(detect, bad)
+    lines = [json.loads(x) for x in (bad / "spans.jsonl").read_text().splitlines()]
+    if breakage == "offsets":
+        lines[0]["end"] = 10_000
+    elif breakage == "span_id":
+        lines[0]["span_id"] = "0" * 16
+    if breakage in ("offsets", "span_id", "tampered"):
+        (bad / "spans.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines) + ("\n" if breakage == "tampered" else ""))
+        if breakage != "tampered":  # keep the manifest consistent so the span check itself must catch it
+            man = json.loads((bad / "manifest.json").read_text())
+            man["artifacts"]["spans"]["sha256"] = A.sha256_file(bad / "spans.jsonl")
+            (bad / "manifest.json").write_text(json.dumps(man))
+            plan = {**plan, "provenance": {**plan["provenance"], "spans_sha256": man["artifacts"]["spans"]["sha256"]}}
     else:
-        write_spans(path, tables["visits"])
-        lines = path.read_text().splitlines()
-        lines = lines[1:] if kind == "missing" else lines + [json.dumps({"record_id": "nope", "spans": []})]
-        path.write_text("\n".join(lines) + "\n")
-    res, _ = release(tmp_path, tables, plan, spans_files={"visits.note": path})
-    assert res["status"] == "refused" and any("invalid Detect spans" in e for e in res["errors"])
-    assert "Someone" not in json.dumps(res["errors"]) and "Anna" not in json.dumps(res["errors"])
+        man = json.loads((bad / "manifest.json").read_text())
+        man["dataset_fingerprint"] = "f" * 64
+        (bad / "manifest.json").write_text(json.dumps(man))
+    with pytest.raises(A.ArtifactError, match=code):
+        run(data, plan, KEY, tmp_path / "run", bad, scorecard=False)
+    assert not (tmp_path / "run").exists()
 
 
 def test_review_items_block_only_released_or_required_fields(tmp_path, measured):
-    tables, plan = measured
-    res, _ = release(tmp_path, tables, {**plan, "review_queue": [{"column": "visits.city", "confidence": .5, "evidence": "test"}]})
+    _, _, plan = measured
+    item = {"confidence": .5, "evidence": "test"}
+    res, _ = release(tmp_path, measured, {**plan, "review_queue": [{"column": "visits.city", **item}]})
     assert res["status"] == "refused" and any("unresolved review item" in e for e in res["errors"])
-    (tmp_path / "b").mkdir()
-    res, _ = release(tmp_path / "b", tables, {**plan, "review_queue": [{"column": "labs.lab", "confidence": .5, "evidence": "test"}]})
+    res, _ = release(tmp_path / "b", measured, {**plan, "review_queue": [{"column": "labs.lab", **item}]})
     assert res["status"] == "validated"  # dropped, unrequired: informational only
 
 
 def test_output_directory_rules(tmp_path, measured):
-    tables, plan = measured
-    data = write_data(tmp_path, tables)
+    data, detect, plan = measured
     (tmp_path / "exists").mkdir()
     with pytest.raises(FileExistsError):
-        run(data, plan, KEY, tmp_path / "exists", scorecard=False)
+        run(data, plan, KEY, tmp_path / "exists", detect, scorecard=False)
     with pytest.raises(ValueError, match="overlap"):
-        run(data, plan, KEY, data / "inside", scorecard=False)
+        run(data, plan, KEY, data / "inside", detect, scorecard=False)
     assert not (data / "inside").exists()
 
 
-def test_identifier_hit_fails_validation_and_keeps_staging_private(tmp_path, measured):
-    tables, plan = measured
-    leaky = deepcopy(tables)
-    leaky["labs"].loc[0, "code"] = "maija.m@example.com"  # a KEEP column carrying an identifier
-    plan = {**plan, "input_digest": input_digest(leaky)}
-    res, out = release(tmp_path, leaky, plan)
+def test_identifier_hit_fails_validation_and_keeps_staging_private(tmp_path):
+    tables, labels, rel, req = demo()
+    tables["labs"].loc[0, "code"] = "maija.m@example.com"  # a KEEP column carrying an identifier
+    data, detect, plan = bound_plan(tmp_path / "in", tables, labels, rel, req)
+    assert plan["outcome"]["approved"]
+    res = run(data, plan, KEY, tmp_path / "run", detect, scorecard=False)
+    out = tmp_path / "run"
     assert res["status"] == "validation_failed"
     assert not (out / "protected").exists() and (out / "staging" / "protected" / "labs.csv").exists()
     m = json.loads((out / "manifest.json").read_text())
@@ -225,7 +268,7 @@ def test_hmac_token_scanner_hits_are_classified_not_ignored(tmp_path):
     assert report["unexplained_by_column"] == {"t.other": {"PHONE": 1}} and check["status"] == "failed"
 
 
-def suppression_inputs():
+def test_local_suppression_matches_the_measured_preview(tmp_path):
     rng = np.random.default_rng(0)
     n = 100
     tables = {"visits": pd.DataFrame({"vid": [f"V{i:05d}" for i in range(n)], "pid": [f"p{i}" for i in range(n)],
@@ -238,21 +281,20 @@ def suppression_inputs():
     rel = {"keys": [{"column": "visits.vid"}], "joins": [], "subject_keys": {"visits": "visits.pid"}}
     req = {"source": "spec", "scenario": "T", "dataset": "demo", "trust_level": "controlled_research",
            "targets": {"k": 2}, "required": {"visits.city": ["CITY"]}, "precision": {}, "joins": [], "warnings": []}
-    plan = select(tables, labels, rel, req, release_id="demo/recipient-b")
+    data = write_data(tmp_path, tables)
+    lab_path = write_detect_dir(tmp_path / "detect", data, labels)
+    read = read_tables(data)
+    plan = select(read, labels, rel, req, release_id="demo/recipient-b")
+    plan["provenance"] = A.provenance(data, A.load_manifest(lab_path, data, "demo"))
     city = next(c for c in plan["columns"] if c["column"] == "city")
     city["rungs"] = city["rungs"][:1]
-    return tables, search(tables, plan, KEY)
-
-
-def test_local_suppression_matches_the_measured_preview(tmp_path):
-    tables, plan = suppression_inputs()
-    assert plan["status"] == "measured_ok" and plan["suppression"]
-    frames, stats = execute(tables, plan, KEY)
+    plan = search(read, plan, KEY)
+    assert plan["status"] == "measured_ok" and plan["suppression"] and plan["outcome"]["approved"]
+    frames, stats = execute(read, plan, KEY)
     levels = next(e["levels"] for e in plan["search_trace"] if e["evaluation"] == plan["measured"]["chosen_evaluation"])
-    preview = _Evaluator(tables, plan, KEY, [], tables).build(levels, plan["suppression"])
+    preview = _Evaluator(read, plan, KEY, [], read).build(levels, plan["suppression"])
     assert frames["visits"]["city"].tolist() == preview["visits"]["city"].astype(str).tolist()
     assert stats["suppressed_rows"] == {"visits": 2} and len(frames["visits"]) == 100  # rows kept, QIs blanked
-    data = write_data(tmp_path, tables)
     res = run(data, plan, KEY, tmp_path / "run", scorecard=False)
     assert res["status"] == "validated", res.get("errors")
     tampered = {**plan, "search_trace": [{**e, "suppressed_fraction": 0.5} for e in plan["search_trace"]]}
@@ -261,11 +303,9 @@ def test_local_suppression_matches_the_measured_preview(tmp_path):
 
 
 def test_scorecard_is_report_only(tmp_path, measured):
-    tables, plan = measured
-    res, out = release(tmp_path, tables, plan, scorecard=True)
+    res, out = release(tmp_path, measured, scorecard=True)
     assert res["status"] == "validated"
-    status = json.loads((out / "manifest.json").read_text())["scorecard"]["status"]
-    assert status in ("run", "error")
+    assert json.loads((out / "manifest.json").read_text())["scorecard"]["status"] in ("run", "error")
 
 
 def test_csv_writer_refuses_missing_values(tmp_path):
@@ -275,23 +315,24 @@ def test_csv_writer_refuses_missing_values(tmp_path):
         write_csv(pd.DataFrame({"a": [1]}), tmp_path / "y.csv")
 
 
-def test_cli_exit_codes_and_legacy_delegation(tmp_path, measured, monkeypatch):
+def test_cli_exit_codes_and_legacy_delegation(tmp_path, measured, monkeypatch, capsys):
     from server.select.__main__ import main as select_main
     from server.transform.__main__ import main
-    tables, plan = measured
-    data = write_data(tmp_path, tables)
-    spans = write_spans(tmp_path / "spans.jsonl", tables["visits"])
+    data, detect, plan = measured
     good, unmet = tmp_path / "good.json", tmp_path / "unmet.json"
     good.write_text(json.dumps(plan))
-    unmet.write_text(json.dumps({**plan, "status": "target_unmet"}))
+    unmet.write_text(json.dumps({**plan, "status": "target_unmet", "outcome": {"approved": False}}))
     monkeypatch.setenv("PRIVACY_TOOL_HMAC_KEY", KEY.decode())
     assert main(["--data", str(data), "--plan", str(good), "--out", str(tmp_path / "a"),
-                 "--spans", f"visits.note={spans}", "--no-scorecard"]) == 0
+                 "--detect", str(detect), "--no-scorecard"]) == 0
     assert main(["--data", str(data), "--plan", str(unmet), "--out", str(tmp_path / "b"), "--no-scorecard"]) == 2
     assert select_main(["transform", "--data", str(data), "--plan", str(unmet), "--out", str(tmp_path / "c"),
-                        "--no-scorecard"]) == 2
+                        "--detect", str(detect), "--no-scorecard"]) == 2
     assert not (tmp_path / "c" / "protected").exists()
+    assert select_main(["transform", "--data", str(data), "--plan", str(unmet), "--out", str(tmp_path / "d"),
+                        "--detect", str(detect), "--no-scorecard", "--allow-unapproved"]) == 0
+    assert (tmp_path / "d" / "protected" / "NOT_APPROVED.txt").exists()
     monkeypatch.delenv("PRIVACY_TOOL_HMAC_KEY")
     with pytest.raises(SystemExit, match="HMAC key"):
-        main(["--data", str(data), "--plan", str(good), "--out", str(tmp_path / "d")])
-    assert not (tmp_path / "d").exists()
+        main(["--data", str(data), "--plan", str(good), "--out", str(tmp_path / "e")])
+    assert not (tmp_path / "e").exists()
