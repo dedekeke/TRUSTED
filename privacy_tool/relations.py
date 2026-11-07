@@ -23,6 +23,7 @@ NOT_ID_SUBTYPES = {"DATE", "TIMESTAMP", "BIRTH_DATE", "MEASUREMENT", "FINANCIAL_
                    "PERSON_NAME", "STREET_ADDRESS", "FREE_TEXT"}  # EMAIL stays: UPNs are real join keys
 PERSON_IDS = {"CUSTOMER_ID", "PATIENT_ID", "STUDENT_ID", "EMPLOYEE_ID", "CARD_ID", "ACCOUNT_ID"}
 ACCOUNT_NAMES = {"EMAIL", "USERNAME"}  # lowest subject tier
+HOLDINGS = {"CARD_ID", "ACCOUNT_ID"}  # one row per card/account, not per person, when an owner column repeats
 STAFF_IDS = {"EMPLOYEE_ID"}  # a person, but not the data subject when a joined subject exists
 ID_LIKE = re.compile(r"^(?=.*\d)\S{3,40}$")
 DECIMAL = re.compile(r"^[-+]?\d+[.,]\d+$")
@@ -100,40 +101,59 @@ def _repeats(p: dict) -> bool:
     return bool(p["nonblank"]) and p["distinct"] / p["nonblank"] < SUBJECT_MAX_DISTINCT and bool((p["counts"] >= 2).any())
 
 
-def _subjects(tables, prof, ref_label, joins) -> dict[str, list[str]]:
-    """Per table, the path from the table to its subject column: [local ref] or [child, parent, ..., subject]."""
-    local, staff = {}, {}
+def _tier(label) -> int | None:
+    """Person-identifier strength from the detector label: national id, then person ids, then account names."""
+    role, sub = label or (None, None)
+    if role not in KEY_ROLES:
+        return None
+    return 0 if sub == "NATIONAL_ID" else 1 if sub in PERSON_IDS else 2 if sub in ACCOUNT_NAMES else None
+
+
+def _subjects(tables, prof, ref_label, joins, key_refs) -> dict[str, list[str]]:
+    """Per table, the path from the table to its subject column: [local ref] or [child, parent, ..., subject].
+
+    A table's own person key (one row per person) beats repeating columns, except a card/account key next to a
+    repeating owner (rows are the person's holdings). Staff ids and account names that are not themselves a join
+    child give way to a subject inherited through joins."""
+    children = {j["child"] for j in joins.values()}
+    local, weak = {}, {}
     for t, df in sorted(tables.items()):
-        ranked = []
+        own, ranked = [], []
         for i, c in enumerate(df.columns):
             ref = f"{t}.{c}"
-            role, sub = ref_label[ref] or (None, None)
-            tier = 0 if role == "direct_identifier" and sub == "NATIONAL_ID" else \
-                1 if role == "technical_identifier" and sub in PERSON_IDS else \
-                2 if role == "direct_identifier" and sub in ACCOUNT_NAMES else None
-            p = prof[ref]
-            # account names (UPNs, logins) often have no digits: for them, no spaces is enough
-            if tier is not None and p["distinct"] >= MIN_CHILD_DISTINCT and (p["id_values"] or tier == 2) \
-                    and not p["spaces"] and _repeats(p):
-                ranked.append((sub in STAFF_IDS, tier, i, ref))
-        if ranked:
+            tier = _tier(ref_label[ref])
+            if tier is None:
+                continue
+            sub, p = ref_label[ref][1], prof[ref]
+            cand = (sub in STAFF_IDS, tier, i, ref, sub)
+            if ref in key_refs:
+                own.append(cand)
+            # national ids are checksum-validated by the detector and may carry a prefix ('HETU 0101...');
+            # person ids must look like ids; account names (often digit-free) must not contain spaces
+            elif p["distinct"] >= MIN_CHILD_DISTINCT and _repeats(p) and \
+                    (tier == 0 or (tier == 1 and p["id_values"]) or (tier == 2 and not p["spaces"])):
+                ranked.append(cand)
+        if own and not (min(own)[4] in HOLDINGS and ranked):
+            local[t] = [min(own)[3]]
+        elif ranked:
             best = min(ranked)
-            (staff if best[0] else local)[t] = [best[3]]
+            (weak if best[0] or (best[1] == 2 and best[3] not in children) else local)[t] = [best[3]]
     paths = dict(local)
     for _ in tables:  # inherit through joins until nothing changes; shortest path, then join order
         changed = False
         for j in sorted(joins.values(), key=lambda j: (j["child"], j["parent"])):
             ct, pt = j["child"].split(".", 1)[0], j["parent"].split(".", 1)[0]
             if pt in paths and ct not in local:
-                cand = [j["child"], j["parent"], *paths[pt]]
-                if ct in {r.split(".", 1)[0] for r in paths[pt]}:
+                up = paths[pt]
+                cand = [j["child"], *up] if up[0] == j["parent"] else [j["child"], j["parent"], *up]
+                if ct in {r.split(".", 1)[0] for r in up}:
                     continue  # cycle back through this table
                 if ct not in paths or len(cand) < len(paths[ct]):
                     paths[ct], changed = cand, True
         if not changed:
             break
-    for t, p in staff.items():
-        paths.setdefault(t, p)  # a local staff id only when no subject is reachable
+    for t, p in weak.items():
+        paths.setdefault(t, p)  # a local staff id or account name only when no subject is reachable
     return paths
 
 
@@ -195,7 +215,8 @@ def discover(tables: dict[str, pd.DataFrame], labels: pd.DataFrame | None = None
         paths = {}
         notices.append(NO_LABELS)
     else:
-        paths = _subjects(tables, prof, ref_label, {j: v for j, v in joins.items() if v["coverage"] >= COVERAGE})
+        paths = _subjects(tables, prof, ref_label, {j: v for j, v in joins.items() if v["coverage"] >= COVERAGE},
+                         {k["column"] for k in keys})
     by_size = sorted(paths, key=lambda t: (-len(tables[t]), t))
     subject_key = paths[by_size[0]][-1] if by_size else None
     want = declared.get("subject_key")
@@ -203,7 +224,8 @@ def discover(tables: dict[str, pd.DataFrame], labels: pd.DataFrame | None = None
         if want not in prof:
             conflicts.append(f"declared subject key {want}: column not found")
         else:
-            if not _repeats(prof[want]):
+            own_person_key = want in {k["column"] for k in keys} and _tier(ref_label[want]) is not None
+            if not _repeats(prof[want]) and not own_person_key:
                 conflicts.append(f"declared subject key {want}: values do not repeat across rows")
             paths[want.split(".", 1)[0]] = [want]
         if subject_key is not None and subject_key != want:

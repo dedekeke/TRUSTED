@@ -202,3 +202,42 @@ def test_should_take_account_name_as_lowest_subject_tier():
     lab = labels([("logs", "upn", "direct_identifier", "EMAIL"), ("logs", "cust", "technical_identifier", "CUSTOMER_ID")])
     assert discover({"logs": logs}, lab)["subject_keys"] == {"logs": "logs.cust"}
     assert discover({"logs": logs[["upn"]]}, lab)["subject_keys"] == {"logs": "logs.upn"}
+
+
+def test_should_take_own_person_key_over_repeating_manager_email():
+    upns = [f"user{i}@corp.example" for i in range(60)]
+    identity = pd.DataFrame({"emp": [f"E{i:04d}" for i in range(60)], "upn": upns,
+                             "manager": [upns[i % 6] for i in range(60)]})
+    lab = labels([("identity", "emp", "technical_identifier", "EMPLOYEE_ID"),
+                  ("identity", "upn", "direct_identifier", "EMAIL"), ("identity", "manager", "direct_identifier", "EMAIL")])
+    assert discover({"identity": identity}, lab)["subject_paths"] == {"identity": ["identity.upn"]}
+
+
+def test_should_keep_repeating_owner_over_card_key():
+    cards = pd.DataFrame({"card": [f"K{i:05d}" for i in range(90)], "cust": [f"C{i % 30:04d}" for i in range(90)]})
+    lab = labels([("cards", "card", "technical_identifier", "CARD_ID"),
+                  ("cards", "cust", "technical_identifier", "CUSTOMER_ID")])
+    assert discover({"cards": cards}, lab)["subject_keys"] == {"cards": "cards.cust"}
+
+
+def test_should_keep_national_id_subject_when_some_values_carry_a_prefix():
+    ids = [f"0101{50 + i % 40:02d}-9{i % 40:02d}A" for i in range(160)]
+    t = pd.DataFrame({"c05": [f"HETU {v}" if i % 4 == 0 else v for i, v in enumerate(ids)],
+                      "c09": [f"p{i % 30}@mail.example" for i in range(160)]})
+    lab = labels([("t", "c05", "direct_identifier", "NATIONAL_ID"), ("t", "c09", "direct_identifier", "EMAIL")])
+    assert discover({"t": t}, lab)["subject_keys"] == {"t": "t.c05"}
+
+
+def test_should_inherit_subject_over_local_author_email():
+    t, lab = visits_and_notes()
+    t["notes"] = t["notes"].drop(columns="staff").assign(author=[f"doc{i % 25}@h.example" for i in range(300)])
+    lab = pd.concat([lab, labels([("notes", "author", "direct_identifier", "EMAIL")])])
+    assert discover(t, lab)["subject_paths"]["notes"] == ["notes.v", "visits.v", "visits.p"]
+
+
+def test_should_keep_local_account_name_that_is_itself_the_join_child():
+    upns = [f"user{i}@corp.example" for i in range(60)]
+    t = {"identity": pd.DataFrame({"upn": upns}), "logs": pd.DataFrame({"upn": [upns[i % 60] for i in range(240)]})}
+    lab = labels([("identity", "upn", "direct_identifier", "EMAIL"), ("logs", "upn", "direct_identifier", "EMAIL")])
+    r = discover(t, lab)
+    assert (r["subject_paths"], r["subject_key"]) == ({"identity": ["identity.upn"], "logs": ["logs.upn"]}, "logs.upn")
