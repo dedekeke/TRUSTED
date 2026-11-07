@@ -2,7 +2,8 @@
 
 This is the central backend guide: **Detect → Select → Transform**. All three stages exist; the
 final transform/export stage follows the plan in [server/transform.md](server/transform.md).
-The frontend is in `client/`; its backend API connection remains separate work.
+The frontend is in `client/`; its **Run pipeline** page drives the whole chain through `server/api.py` (see
+[UI: run the pipeline](#ui-run-the-pipeline)).
 
 ## Layout and setup
 
@@ -13,6 +14,8 @@ server/
   transform/    final stage: release gate, staged export, serialized validation and reports
   actions.py    shared pure protection operations (selection previews and final export run the same code)
   pipeline.py   one command: detect infer -> select -> search -> transform (python -m server.pipeline)
+  api.py        local HTTP API (stdlib) for the UI; jobs.py runs pipeline.py in the background, api_views.py
+                turns each step's outputs into tables
   transform.md  implementation and output-formatting plan for the final stage
 ```
 
@@ -278,3 +281,39 @@ drops no rows. A full-data release needs the owner to resolve those conflicts an
 
 Never commit raw data, protected/evaluation outputs, row maps or keys. Detector outputs/caches and selection
 outputs may contain sensitive material; use fresh ignored directories and keep them private.
+
+## UI: run the pipeline
+
+The client's **Run pipeline** page (`/run`) works like a CI run: choose a bundled dataset or browse a folder of CSV
+files, choose the sharing scenario (or write a requirement spec for unknown data), and press Run. The steps
+Input → Detect → Review → Select → Search → Transform → Evaluate appear as an accordion: green passed, red failed,
+yellow waits for a reviewer. Open a step to see its results as tables (labels, PET per column, risk targets vs
+achieved, utility per task, validation checks, and the scorecard compared with B0/B2/B2-k from
+`results/benchmark.json`). A run stopped by `review_required` is resumed from the Review step: the confirmed labels
+go to `select --confirm` exactly as on the CLI. The **Protected data** button downloads `protected/` only.
+
+```bash
+# terminal 1 (repository root): the API, with the HMAC key and a trained Detect v3 model
+PRIVACY_TOOL_HMAC_KEY=... python -m server.api --model <detect model dir> --runs <runs dir> [--port 8000]
+# terminal 2: the client through the Vite proxy
+cd client && VITE_API_BASE_URL=/ npm run dev        # http://localhost:5173/run
+```
+
+A UI run is the CLI run: `server/jobs.py` calls `server.pipeline.run()` with the namespace the CLI builds and the
+shared `pipeline.DEFAULTS`. `server/detect/tests/test_api_parity.py` checks that `protected/` is byte-identical between
+`python -m server.pipeline` and a UI job (and a full-data CS-S1 run was checked the same way). Scores in the UI are read
+from the stage outputs and `pets-eval`; the UI computes none itself. Responses carry labels, counts, statuses and
+digests only; step logs are served with personal-looking patterns scrubbed. Run folders hold data: keep them private.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/jobs` `{dataset}` or `{upload: name}` | new job |
+| `PUT /api/jobs/{id}/files/{name}.csv` | upload one CSV, stored byte for byte |
+| `POST /api/jobs/{id}/start` `{scenario | spec, budget, llm, allow_unapproved, no_scorecard, release_id}` | run all steps in the background |
+| `GET /api/jobs/{id}` | state and the 7 steps (status, duration, one-line summary, error) |
+| `GET /api/jobs/{id}/steps/{step}` / `.../log` | step tables and issues / scrubbed log |
+| `POST /api/jobs/{id}/confirm` `{confirmations, allow_downgrade}` | confirm labels; continues from Select (`select-2/`, ...) |
+| `GET /api/jobs/{id}/download` | zip of `protected/` (never `evaluation/` or row maps) |
+| `GET /api/baselines?dataset=&scenario=` | B0/B2/B2-k and B1 rows from `results/benchmark.json` |
+
+The older step-by-step endpoints under `/api/runs` remain for compatibility.

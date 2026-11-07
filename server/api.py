@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs
 
 import pandas as pd
 
@@ -30,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "detect"))  # pets_dete
 
 from pets_eval.io import find_package_root, load_scenarios  # noqa: E402
 
+from server import jobs as job_runner  # noqa: E402
 from server.select import __main__ as cli  # noqa: E402
 from server.select import artifacts, select  # noqa: E402
 from server.select import labels as detection_labels  # noqa: E402
@@ -39,7 +41,7 @@ RUN_ID = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
 LABEL_FIELDS = ["table", "column", "privacy_role", "subtype", "confidence", "needs_review", "art9", "art9_table",
                 "data_kind"]  # `reason` and similar free text are excluded: they may quote cell values
 TRACE_DROP = {"risk"}  # per-evaluation risk dumps are large; share below k is kept per table
-STEP_LOCK = threading.Lock()  # one pipeline step at a time: the CLI steps print to the process-wide stdout
+STEP_LOCK = job_runner.RUN_LOCK  # one pipeline step at a time (legacy steps and jobs): CLIs print to the process stdout
 
 
 class ApiError(Exception):
@@ -79,6 +81,12 @@ class Api:
         self.model_sha256 = model_sha256  # None: load_model falls back to env DETECT_MODEL_SHA256
         self.runs.mkdir(parents=True, exist_ok=True)
         self.detect = detect or self._infer
+        bench = self.root / "results" / "benchmark.json"
+        self.benchmark = json.loads(bench.read_text()).get("baselines", {}) if bench.is_file() else {}
+        # UI jobs run server.pipeline itself; an injected detector (tests) is passed through, otherwise the
+        # pipeline's own Detect v3 inference runs exactly as on the CLI
+        self.jobs = job_runner.Jobs(self.root, self.model, self.runs / "jobs", model_sha256=model_sha256,
+                                    detect_fn=detect, benchmark=self.benchmark, scenarios=self.scenarios())
 
     def _infer(self, model, data, out):
         from pets_detect_v3 import deploy
@@ -217,6 +225,31 @@ class Api:
         self.step(d, "search", lambda: cli.cmd_search(a))
         return self.state(run_id)
 
+    # ------------------------------------------------------------------ jobs (UI pipeline)
+    @staticmethod
+    def validate_confirmation(data: Path, detect_dir: Path, confirmed: pd.DataFrame, allow: bool) -> None:
+        """The validation select applies to --confirm (unknown column, protection downgrade)."""
+        raw = pd.read_csv(detect_dir / "labels.csv", dtype=str, keep_default_na=False)
+        labels = detection_labels.from_detection(raw, cli.read_tables(data), data.name)
+        try:
+            select.confirm(labels, confirmed, allow)
+        except ValueError as e:
+            raise ApiError(400, "invalid_confirmation", str(e)) from None
+
+    def baselines(self, query: dict) -> dict:
+        ds, sc = (query.get("dataset") or [None])[0], (query.get("scenario") or [None])[0]
+        rows = []
+        for key in ("B0", "B2", "B2K"):
+            b = self.benchmark.get(f"{key}_{ds}")
+            if b:
+                rows.append({"baseline": key, **{k: b.get(k) for k in ("privacy", "utility", "composite", "worst_reid",
+                                                                        "residual_identifiers")},
+                             "scenario_utility": (b.get("utility_by_scenario") or {}).get(sc),
+                             "utility_tasks": b.get("utility_tasks")})
+        det = self.benchmark.get("B1_detection_public") or {}
+        return {"dataset": ds, "scenario": sc, "baselines": rows,
+                "detection": {"B1": {k: det.get(k) for k in ("macro_f1", "sensitive_recall", "subtype_accuracy")}}}
+
     # ------------------------------------------------------------------ state
     def state(self, run_id: str) -> dict:
         d = self.run_dir(run_id)
@@ -275,7 +308,21 @@ def handler(api: Api):
               ("GET", re.compile(r"^/api/runs/([^/]+)$"), lambda m, b: api.state(m[1])),
               ("POST", re.compile(r"^/api/runs/([^/]+)/confirm$"), lambda m, b: api.confirm(m[1], b)),
               ("POST", re.compile(r"^/api/runs/([^/]+)/select$"), lambda m, b: api.select(m[1], b)),
-              ("POST", re.compile(r"^/api/runs/([^/]+)/search$"), lambda m, b: api.search(m[1], b))]
+              ("POST", re.compile(r"^/api/runs/([^/]+)/search$"), lambda m, b: api.search(m[1], b)),
+              # UI pipeline jobs (background server.pipeline with per-step status)
+              ("GET", re.compile(r"^/api/baselines$"), lambda m, b: api.baselines(b)),
+              ("POST", re.compile(r"^/api/jobs$"), lambda m, b: api.jobs.create(b.get("dataset"), b.get("upload"))),
+              ("GET", re.compile(r"^/api/jobs/([^/]+)$"), lambda m, b: api.jobs.state(m[1])),
+              ("POST", re.compile(r"^/api/jobs/([^/]+)/start$"),
+               lambda m, b: api.jobs.start(m[1], b, bool(os.environ.get(cli.KEY_ENV)))),
+              ("POST", re.compile(r"^/api/jobs/([^/]+)/confirm$"),
+               lambda m, b: api.jobs.confirm(m[1], b.get("confirmations"), b.get("allow_downgrade", False),
+                                             api.validate_confirmation)),
+              ("GET", re.compile(r"^/api/jobs/([^/]+)/steps/([a-z]+)$"), lambda m, b: api.jobs.step_view(m[1], m[2])),
+              ("GET", re.compile(r"^/api/jobs/([^/]+)/steps/([a-z]+)/log$"),
+               lambda m, b: api.jobs.step_log(m[1], m[2]))]
+    upload = re.compile(r"^/api/jobs/([^/]+)/files/([^/]+)$")
+    download = re.compile(r"^/api/jobs/([^/]+)/download$")
 
     class Handler(BaseHTTPRequestHandler):
         def send(self, status: int, body: dict | None = None):
@@ -285,9 +332,22 @@ def handler(api: Api):
             if origin in DEV_ORIGINS:
                 self.send_header("Access-Control-Allow-Origin", origin)
                 self.send_header("Vary", "Origin")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def send_bytes(self, name: str, data: bytes):
+            self.send_response(200)
+            origin = self.headers.get("Origin")
+            if origin in DEV_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+                self.send_header("Access-Control-Expose-Headers", "Content-Disposition")
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -297,8 +357,18 @@ def handler(api: Api):
 
         def dispatch(self, method):
             try:
-                path = self.path.split("?", 1)[0]
+                path, _, query = self.path.partition("?")
                 body = {}
+                if method == "PUT":
+                    m = upload.match(path)
+                    if not m:
+                        raise ApiError(404, "not_found", f"no route {method} {path}")
+                    n = int(self.headers.get("Content-Length") or 0)
+                    return self.send(200, api.jobs.upload(m[1], m[2], self.rfile, n))
+                if method == "GET" and (m := download.match(path)):
+                    return self.send_bytes(*api.jobs.protected_zip(m[1]))
+                if method == "GET":
+                    body = parse_qs(query)
                 if method == "POST":
                     n = int(self.headers.get("Content-Length") or 0)
                     if n > 1_000_000:
@@ -314,7 +384,7 @@ def handler(api: Api):
                     if m and verb == method:
                         return self.send(200, fn(m, body))
                 raise ApiError(404, "not_found", f"no route {method} {path}")
-            except ApiError as e:
+            except (ApiError, job_runner.JobError) as e:
                 self.send(e.status, {"error": {"code": e.code, "message": str(e)}})
             except Exception as e:  # noqa: BLE001
                 self.log_error("unhandled: %r", e)
@@ -325,6 +395,9 @@ def handler(api: Api):
 
         def do_POST(self):
             self.dispatch("POST")
+
+        def do_PUT(self):
+            self.dispatch("PUT")
 
     return Handler
 
