@@ -5,7 +5,7 @@
   python -m server.select transform --data <dataset dir> --plan <decisions.json> --out <new dir>
 
 The HMAC key is read from the PRIVACY_TOOL_HMAC_KEY environment variable and never written.
-`transform` writes <out>/protected/ (shareable) and <out>/evaluation/ (tables + private row maps, scoring only).
+`transform` delegates to `python -m server.transform`: <out>/protected/ (shareable), <out>/evaluation/ (private).
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import pandas as pd
 from pets_eval.io import find_package_root, load_tables
 
 from . import labels as detection_labels
-from . import preview, relations, requirements, search, select, transform
+from . import preview, relations, requirements, search, select
 from .detect import detect_table
 
 KEY_ENV = "PRIVACY_TOOL_HMAC_KEY"
@@ -102,20 +102,16 @@ def cmd_search(a) -> int:
 
 
 def cmd_transform(a) -> int:
-    key = os.environ.get(KEY_ENV, "").encode()
-    if not key:
-        sys.exit(f"set {KEY_ENV} (the HMAC key) in the environment")
-    plan = json.loads(Path(a.plan).read_text())
-    if plan.get('suppression') or any(c.get('method') in ('week_hour', 'month_hour', 'year_hour')
-                                      for c in plan.get('columns', [])):
-        sys.exit('this plan needs preview-only operations; complete the transform integration before export')
-    out = Path(a.out)
-    if out.exists():
-        sys.exit(f"refusing to write into existing {out}")
-    _, stats = transform.apply(read_tables(a.data), plan, key, out / "protected", out / "evaluation")
-    (out / "transform_stats.json").write_text(json.dumps(stats, indent=2))
-    print(f"wrote {len(stats['rows'])} tables -> {out}/protected (shareable), {out}/evaluation (private)")
-    return 0
+    """Delegates to the one final executor (`python -m server.transform`), with its release gate and checks."""
+    from server.transform.__main__ import main as transform_main
+    argv = ["--data", a.data, "--plan", a.plan, "--out", a.out]
+    for item in a.spans or []:
+        argv += ["--spans", item]
+    if a.text_fallback:
+        argv += ["--text-fallback", a.text_fallback]
+    if a.no_scorecard:
+        argv.append("--no-scorecard")
+    return transform_main(argv)
 
 
 def main(argv=None) -> int:
@@ -143,10 +139,13 @@ def main(argv=None) -> int:
     q.add_argument("--budget", type=int, default=50)
     q.add_argument("--tau", type=float, default=0.8, help="minimum task score as a share of its unsearched score")
     q.set_defaults(fn=cmd_search)
-    t = sub.add_parser("transform", help="apply decisions.json")
+    t = sub.add_parser("transform", help="export a validated release (same as python -m server.transform)")
     t.add_argument("--data", required=True)
     t.add_argument("--plan", required=True)
     t.add_argument("--out", required=True)
+    t.add_argument("--spans", action="append", metavar="TABLE.COLUMN=FILE")
+    t.add_argument("--text-fallback", choices=["rules"])
+    t.add_argument("--no-scorecard", action="store_true")
     t.set_defaults(fn=cmd_transform)
     a = ap.parse_args(argv)
     return a.fn(a)

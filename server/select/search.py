@@ -123,6 +123,24 @@ class _Evaluator:
         return scores
 
 
+def risk_violations(risk: dict, targets: dict) -> list[str]:
+    """Named k/l/t and subject-identity breaches of measured risk; empty means the risk targets are met."""
+    out = []
+    for table, r in risk.items():
+        if r['unknown_subject_rows']:
+            out.append(f"{table}: {r['unknown_subject_rows']} rows have unresolved subject identity")
+        if r['share_below_k'] > 0:
+            out.append(f"{table}: k={r['k_anonymity'].get('min_k')} < {targets['k']}; "
+                       f"{r['share_below_k']:.2%} of known subject/class entries below target")
+        for column, metrics in r['sensitive'].items():
+            observed_l = metrics['l_diversity'].get('min_distinct_l', 0)
+            if observed_l < targets.get('l', 1):
+                out.append(f"{table}.{column}: l={observed_l} < {targets.get('l', 1)}")
+            if 't' in targets and metrics['t_closeness'].get('max_t', 1.) > targets['t']:
+                out.append(f"{table}.{column}: t={metrics['t_closeness'].get('max_t')} > {targets['t']}")
+    return out
+
+
 def _worst(risk, key):
     return max((r.get(key, 0.) for r in risk.values()), default=0.)
 
@@ -208,15 +226,7 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
         return [t for t, b in base.items() if b is None or result['utility'].get(t) is None or result['utility'][t] < tau * b]
 
     def met(result):
-        for r in result['risk'].values():
-            if r['unknown_subject_rows'] or r['share_below_k'] > 0:
-                return False
-            for metrics in r['sensitive'].values():
-                if metrics['l_diversity'].get('min_distinct_l', 0) < targets.get('l', 1):
-                    return False
-                if 't' in targets and metrics['t_closeness'].get('max_t', 1.) > targets['t']:
-                    return False
-        return not failures(result)
+        return not risk_violations(result['risk'], targets) and not failures(result)
 
     def risk_score(result):
         score = 0.
@@ -337,19 +347,7 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
                        'requirement_floors': floors}
     out['search_trace'] = trace
     if out['status'] == 'target_unmet':
-        violations = []
-        for table, risk in current['risk'].items():
-            if risk['unknown_subject_rows']:
-                violations.append(f"{table}: {risk['unknown_subject_rows']} rows have unresolved subject identity")
-            if risk['share_below_k']:
-                violations.append(f"{table}: k={risk['k_anonymity'].get('min_k')} < {targets['k']}; "
-                                  f"{risk['share_below_k']:.2%} of known subject/class entries below target")
-            for column, metrics in risk['sensitive'].items():
-                observed_l = metrics['l_diversity'].get('min_distinct_l', 0)
-                if observed_l < targets.get('l', 1):
-                    violations.append(f"{table}.{column}: l={observed_l} < {targets.get('l', 1)}")
-                if 't' in targets and metrics['t_closeness'].get('max_t', 1.) > targets['t']:
-                    violations.append(f"{table}.{column}: t={metrics['t_closeness'].get('max_t')} > {targets['t']}")
+        violations = risk_violations(current['risk'], targets)
         violations += [f"{task}: unanswerable or below tau={tau} of source-precision utility"
                        for task in failures(current)]
         out['conflict'] = {'remaining_risk': {t: r['share_below_k'] for t, r in current['risk'].items()},

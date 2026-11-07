@@ -19,7 +19,8 @@ flowchart TD
     I --> M[Search candidates in memory: floors, greedy steps, suppression]
     M --> K[Owner-data k/l/t and uniqueness by subject, plus required-task utility]
     K --> O[Chosen plan and trace: measured_ok or target_unmet]
-    O -. next implementation stage .-> X[Transform: apply final plan and validate exported data]
+    O -->|measured_ok only| X[Transform: execute, stage, validate serialized files, publish]
+    X -->|refused or failed| Z[Diagnostics; no approved release]
 ```
 
 The handoff is an artifact boundary. `select --labels` **does not instantiate or train Detect v3**.
@@ -40,9 +41,9 @@ decisions and explanations; neither writes protected tables or private row maps.
 | Search | Probes floors, greedily coarsens and supports local suppression; ≤50 evaluations and ≤2% suppression allowance | Deterministic trace, chosen evaluation, utility-rejected rungs and named conflicts; never lower targets |
 | Metrics | Uses `pets_eval.privacy`, counted by distinct subject contributions | When t is a target, check each candidate; otherwise measure t on the chosen plan |
 
-`preview.py` contains selection-only subject resolution, local-suppression and hour-preserving previews.
-It reuses the existing column/age/validation helpers. **The legacy `transform.py` implementation is unchanged**; completing transformation is still the next stage. Its retained CLI is a prototype
-and rejects preview-only hour rungs or local suppression instead of exporting an incomplete plan.
+Selection previews and the final export share one implementation, `server/actions.py`, which includes
+subject resolution, local suppression and hour-preserving rungs. `server.transform` is the only export
+path. `python -m server.select transform` delegates to it.
 
 ## Run the combination
 
@@ -76,25 +77,18 @@ No training catalog, `truth/` or gold spans are needed by selection.
 | Gap | What remains / expected behavior |
 |---|---|
 | Detector deployment | Detect v3 currently loads `metadata/field_catalog.csv` and training profiles in its constructor. It needs a separately trained, frozen model/vocabulary loader before serving catalog-free production inference. Selection consumes saved labels and must not invoke that training path. |
-| Artifact provenance | The adapter checks schema, dataset and confidence, not whether labels describe the same data revision. Bind detector artifacts to an input revision/fingerprint before production use. The existing plan fingerprint covers schema/row counts, not changed cell values. |
-| Spans and linkage | Detect's span/entity JSONL and linkage report are not directly consumed yet. Selection recomputes its own joins and distinct-subject risk; detector row-count risk is not a substitute. Transform must integrate span/entity mappings and verify consistent pseudonyms. |
+| Artifact provenance | The label adapter checks schema, dataset and confidence, not whether labels describe the same data revision. Plans now carry a content `input_digest`; Transform refuses changed source values, and spans must match the current text. Detector label artifacts are still not bound to a revision. |
+| Spans and linkage | Transform consumes Detect span JSONL (`--spans`) after validating offsets and text against the source. Entity-consistent pseudonyms are not implemented: the policy only offers typed placeholders. The linkage report is not consumed; Selection recomputes joins and distinct-subject risk. |
 | Confidence and subtype coverage | Review flags remain actionable. Unknown or unsupported policy precision must block/drop for review, not fall back to raw KEEP. The statistical detector's subtype quality is not established by schema validation alone. |
 | HEALTH-S1 privacy | The prior 50-evaluation selection result remains `target_unmet`: 12.98% of known visit subject/class contributions below k=5, l failures, and missing subjects in 921 visits / 2,205 linked lab rows. More search does not repair missing identities. These figures are historical selection evidence, not a fresh Detect-v3 benchmark. |
 | UI/API | The frontend still uses local/static data and browser-side services. This combination connects backend Python stages through files; a backend API and frontend wiring are not implemented here. |
 | Release approval | A valid/exportable plan is not evidence that privacy targets are met. Do not present a `target_unmet` result as an approved release. Budget exhaustion is not a proof that every plan fails. |
 
-## Remaining pipeline stage: Transform
+## Transform stage
 
-- Execute all chosen actions/parameters, including hour-preserving time rungs and local suppression, with
-  the same semantics as selection previews. Consolidate shared helpers instead of creating a second rule system.
-- Preserve scoped HMAC domains, joins, blank handling, original-source age derivation and parse-failure counts.
-  Obtain keys from the environment; do not store keys or identifier-to-token maps in decisions.
-- Integrate free-text spans/entity consistency and agree an explicit policy for unknown subjects and unmet targets.
-- Export into fresh directories; keep private scoring row maps separate from protected tables. Do not overwrite sources.
-- Recheck policy and measured constraints, run full-data export validation and `pets-eval check`, investigate scan hits,
-  and verify row maps, joins and required utility. This is where the remaining execution/export work belongs.
-
-The legacy transformer and earlier export experiments are retained for reference; they are not newly certified by this move.
+Implemented as `server.transform`; see the central README and [server/transform.md](server/transform.md).
+It exports only `measured_ok` plans and validates the written files before it publishes them. For
+HEALTH-S1 it currently produces refusal diagnostics.
 
 ## Validation
 

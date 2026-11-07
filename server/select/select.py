@@ -29,6 +29,16 @@ def fingerprint(tables: dict[str, pd.DataFrame]) -> str:
     return hashlib.sha256(json.dumps(shape).encode()).hexdigest()[:16]
 
 
+def input_digest(tables: dict[str, pd.DataFrame]) -> str:
+    """Owner-private content digest of every table (names, columns and values as read with the string/blank
+    contract). Transform refuses to execute a plan whose source values changed, even with the same schema."""
+    h = hashlib.sha256()
+    for t, df in sorted(tables.items()):
+        h.update(json.dumps([t, [str(c) for c in df.columns], len(df)]).encode())
+        h.update(df.astype(object).where(df.notna(), "").to_csv(index=False, header=False, lineterminator="\n").encode())
+    return h.hexdigest()
+
+
 def _ref(t, c):
     return f"{t}.{c}"
 
@@ -294,8 +304,8 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
         warnings.append("no release_id given: tokens are scoped to scenario/trust only; pass one per recipient")
     return {
         "policy_version": POLICY_VERSION, "detector_version": DETECTOR_VERSION,
-        "input_fingerprint": fingerprint(tables),
-        "release_id": release_id or f"{scope}/{trust}",
+        "input_fingerprint": fingerprint(tables), "input_digest": input_digest(tables),
+        "release_id": release_id or f"{scope}/{trust}", "release_id_explicit": bool(release_id),
         "status": "blocked" if errors else "ready_for_transform",
         "source": requirements.get("source"), "scenario": requirements.get("scenario"),
         "dataset": requirements.get("dataset"), "trust_level": trust, "targets": tg,
