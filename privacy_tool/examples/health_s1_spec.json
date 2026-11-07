@@ -15,8 +15,8 @@
     {"column": "lab_results.value", "task": "crp_temperature"}
   ],
   "any_of": [
-    ["ed_visits.los_minutes", "ed_visits.arrival_ts+ed_visits.discharge_ts"],
-    ["ed_visits.readmit_30d", "ed_visits.patient_hetu"]
+    [["ed_visits.los_minutes"], ["ed_visits.arrival_ts", "ed_visits.discharge_ts"]],
+    [["ed_visits.readmit_30d"], ["ed_visits.patient_hetu"]]
   ],
   "joins": [["lab_results.visit_id", "ed_visits.visit_id"]],
   "subject_key": "ed_visits.patient_hetu"
