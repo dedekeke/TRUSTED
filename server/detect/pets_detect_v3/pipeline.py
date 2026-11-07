@@ -72,6 +72,12 @@ class DetectorV3:
         self.pairs = set(zip(self.catalog.privacy_role, self.catalog.subtype))
         self.timings: dict[str, float] = {}
 
+    def prefit(self, datasets) -> "DetectorV3":
+        """Fit the tier-2 value models for these datasets in parallel up front (otherwise each is fitted on first use)."""
+        if self.router is not None:
+            self.router.prefit(datasets)
+        return self
+
     def _view(self, p: dict) -> dict:
         v = self.cfg.view
         if v == "blind":  # like an obfuscated export: column AND table names hidden (v1 blind() keeps the table)
@@ -108,9 +114,14 @@ class DetectorV3:
         # table domain first: the Art. 9-aware rules need it before deciding
         domains, art9_tab = {}, {}
         use_llm = self.llm is not None and self.llm.available()
+        doms = {}
+        if use_llm:
+            doms = self.llm.map_tables(
+                {table: (lambda idx=idx: self.llm.domain(qs[idx[0]]["table"] if cfg.view != "blind" else "(hidden)",
+                                                          [qs[i] for i in idx], cfg.view != "blind", cfg.context))
+                 for table, idx in by_table.items()})
         for table, idx in by_table.items():
-            tname = qs[idx[0]]["table"] if cfg.view != "blind" else "(hidden)"
-            dom = self.llm.domain(tname, [qs[i] for i in idx], cfg.view != "blind", cfg.context) if use_llm else ""
+            dom = doms.get(table, "")
             domains[table] = dom
             rule_hint = any(t1s[i].subtype in ("DIAGNOSIS_CODE", "HEALTH_DATA") for i in idx)
             art9_tab[table] = bool(ART9_DOMAIN.search(dom)) or rule_hint
