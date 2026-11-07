@@ -1,0 +1,5 @@
+export { default as ScenarioPanel } from '@/features/protect/components/ScenarioPanel'
+export { default as PolicyTable } from '@/features/protect/components/PolicyTable'
+export { default as KAnonymityControl } from '@/features/protect/components/KAnonymityControl'
+export { default as TransformLog } from '@/features/protect/components/TransformLog'
+export { default as BeforeAfterPreview } from '@/features/protect/components/BeforeAfterPreview'
