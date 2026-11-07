@@ -10,20 +10,23 @@ import re
 
 import pandas as pd
 
-from privacy_tool.detect import R
-
 KEY_UNIQUE = 0.99  # non-blank values distinct at least this share
 KEY_MAX_BLANK = 0.01
 COVERAGE = 0.95  # child distinct values found in the parent key
 MIN_CHILD_DISTINCT = 20  # fewer distinct values looks like a category, not a reference
-SHAPE_AGREE = 0.9
+SHAPE_AGREE = 0.85  # below COVERAGE so the format filter never rejects what coverage would accept; orphans may differ
 SUBJECT_MAX_DISTINCT = 0.95
 SAMPLE = 200
+PARENT_SAMPLE = 2000  # parent values whose shapes the child sample is compared against
 KEY_ROLES = {"record_key", "technical_identifier", "direct_identifier"}
-NOT_KEY_SUBTYPES = {"DATE", "TIMESTAMP", "BIRTH_DATE", "MEASUREMENT", "FINANCIAL_DATA", "GPS_COORDINATE", "AGE"}
+NOT_ID_SUBTYPES = {"DATE", "TIMESTAMP", "BIRTH_DATE", "MEASUREMENT", "FINANCIAL_DATA", "GPS_COORDINATE", "AGE",
+                   "PERSON_NAME", "STREET_ADDRESS", "FREE_TEXT"}  # EMAIL stays: UPNs are real join keys
 PERSON_IDS = {"CUSTOMER_ID", "PATIENT_ID", "STUDENT_ID", "EMPLOYEE_ID", "CARD_ID", "ACCOUNT_ID"}
+STAFF_IDS = {"EMPLOYEE_ID"}  # a person, but not the data subject when a joined subject exists
 ID_LIKE = re.compile(r"^(?=.*\d)\S{3,40}$")
 DECIMAL = re.compile(r"^[-+]?\d+[.,]\d+$")
+DATE_SHAPE = re.compile(r"^\d{1,4}[-./]\d{1,2}([-./]\d{1,4})?([ T]|$)|^\d{4}-?W\d{1,2}$")
+NO_LABELS = "no labels: subject keys not discovered (they need detector subtypes)"
 
 
 def _shape(v: str) -> str:
@@ -31,30 +34,46 @@ def _shape(v: str) -> str:
     return re.sub(r"\d+", "9", re.sub(r"[^\W\d_]+", "A", v))
 
 
+def _spread(vals: pd.Index, n: int) -> list[str]:
+    return list(vals[:: max(1, len(vals) // n)][:n])
+
+
+def _share(vals: list[str], test) -> float:
+    return sum(map(test, vals)) / len(vals) if vals else 0.0
+
+
 def _profile(s: pd.Series) -> dict:
     # Count raw values first, then trim the (far fewer) distinct ones: cheap on 1.6M-row columns.
-    vc = s.value_counts(sort=False)  # first-occurrence order: deterministic
-    counts = pd.Series(vc.to_numpy(), index=vc.index.astype(str).str.strip()).groupby(level=0, sort=False).sum()
+    vc = s.value_counts(sort=False)
+    counts = pd.Series(vc.to_numpy(), index=vc.index.astype(str).str.strip()).groupby(level=0).sum()  # sorted index
     blank = int(counts.pop("")) if "" in counts.index else 0
     vals = counts.index
-    n = int(counts.sum())
     lens = vals.str.len()
-    sample = list(vals[:: max(1, len(vals) // SAMPLE)][:SAMPLE])
-    return {"rows": len(s), "nonblank": n, "distinct": len(vals), "blank_rate": blank / len(s) if len(s) else 1.0,
-            "counts": counts, "values": vals, "len": (int(lens.min()), int(lens.max())) if len(vals) else (0, 0),
-            "sample": sample, "shapes": {_shape(v) for v in sample},
-            "date_or_measure": bool(sample) and sum(bool(R["DATE_SHAPE"].match(v) or DECIMAL.match(v))
-                                                    for v in sample) / len(sample) >= 0.5}
-
-
-def _excluded(p: dict, label) -> bool:
-    return p["date_or_measure"] or (label is not None and label[1] in NOT_KEY_SUBTYPES)
+    sample = _spread(vals, SAMPLE)
+    return {"rows": len(s), "nonblank": int(counts.sum()), "distinct": len(vals),
+            "blank_rate": blank / len(s) if len(s) else 1.0, "counts": counts, "values": vals,
+            "len": (int(lens.min()), int(lens.max())) if len(vals) else (0, 0), "sample": sample,
+            "shapes": {_shape(v) for v in _spread(vals, PARENT_SAMPLE)},
+            "id_values": _share(sample, lambda v: bool(ID_LIKE.match(v))) >= 0.9,
+            "spaces": _share(sample, lambda v: any(ch.isspace() for ch in v)) >= 0.05,
+            "date_or_measure": _share(sample, lambda v: bool(DATE_SHAPE.match(v) or DECIMAL.match(v))) >= 0.5}
 
 
 def _identifier_like(p: dict, label) -> bool:
+    """Same test for keys and join children: labelled ID role (or ID-looking values), never text/dates/measures."""
+    if p["spaces"] or p["date_or_measure"] or not p["sample"]:
+        return False
     if label is not None:
-        return label[0] in KEY_ROLES
-    return bool(p["sample"]) and sum(bool(ID_LIKE.match(v)) for v in p["sample"]) / len(p["sample"]) >= 0.9
+        return label[0] in KEY_ROLES and label[1] not in NOT_ID_SUBTYPES
+    return p["id_values"]
+
+
+def _dense_integers(p: dict) -> bool:
+    """Values are exactly 0..N or 1..N: a row counter, which any small integer column would 'join'."""
+    if not all(v.isdigit() for v in p["sample"]):
+        return False
+    nums = pd.to_numeric(pd.Series(p["values"]), errors="coerce")
+    return nums.notna().all() and nums.min() <= 1 and nums.max() - nums.min() + 1 == p["distinct"]
 
 
 def _measure_join(parent: dict, child: dict) -> dict:
@@ -64,16 +83,55 @@ def _measure_join(parent: dict, child: dict) -> dict:
 
 
 def _format_agree(parent: dict, child: dict) -> float:
-    """Share of the child's sampled shapes seen in the parent sample; 0 if the length ranges differ."""
-    (pmin, pmax), (cmin, cmax) = parent["len"], child["len"]
-    if not child["sample"] or cmin < pmin or cmax > pmax:
-        return 0.0
-    return sum(_shape(v) in parent["shapes"] for v in child["sample"]) / len(child["sample"])
+    """Share of sampled child values inside the parent's length range with a shape seen in the parent.
+
+    A share, not min/max: a few odd orphans must not hide a join (coverage decides those)."""
+    lo, hi = parent["len"]
+    return _share(child["sample"], lambda v: lo <= len(v) <= hi and _shape(v) in parent["shapes"])
 
 
 def _confidence(coverage: float, agree: float, distinct: int) -> float:
     # coverage dominates; agreeing shapes over many distinct values add the rest
     return round(coverage * (0.7 + 0.3 * agree * min(1.0, distinct / 100)), 3)
+
+
+def _repeats(p: dict) -> bool:
+    return bool(p["nonblank"]) and p["distinct"] / p["nonblank"] < SUBJECT_MAX_DISTINCT and bool((p["counts"] >= 2).any())
+
+
+def _subjects(tables, prof, ref_label, joins) -> dict[str, list[str]]:
+    """Per table, the path from the table to its subject column: [local ref] or [child, parent, ..., subject]."""
+    local, staff = {}, {}
+    for t, df in sorted(tables.items()):
+        ranked = []
+        for i, c in enumerate(df.columns):
+            ref = f"{t}.{c}"
+            role, sub = ref_label[ref] or (None, None)
+            tier = 0 if role == "direct_identifier" and sub == "NATIONAL_ID" else \
+                1 if role == "technical_identifier" and sub in PERSON_IDS else None
+            p = prof[ref]
+            if tier is not None and p["distinct"] >= MIN_CHILD_DISTINCT and p["id_values"] and not p["spaces"] \
+                    and _repeats(p):
+                ranked.append((sub in STAFF_IDS, tier, i, ref))
+        if ranked:
+            best = min(ranked)
+            (staff if best[0] else local)[t] = [best[3]]
+    paths = dict(local)
+    for _ in tables:  # inherit through joins until nothing changes; shortest path, then join order
+        changed = False
+        for j in sorted(joins.values(), key=lambda j: (j["child"], j["parent"])):
+            ct, pt = j["child"].split(".", 1)[0], j["parent"].split(".", 1)[0]
+            if pt in paths and ct not in local:
+                cand = [j["child"], j["parent"], *paths[pt]]
+                if ct in {r.split(".", 1)[0] for r in paths[pt]}:
+                    continue  # cycle back through this table
+                if ct not in paths or len(cand) < len(paths[ct]):
+                    paths[ct], changed = cand, True
+        if not changed:
+            break
+    for t, p in staff.items():
+        paths.setdefault(t, p)  # a local staff id only when no subject is reachable
+    return paths
 
 
 def discover(tables: dict[str, pd.DataFrame], labels: pd.DataFrame | None = None, declared: dict | None = None) -> dict:
@@ -85,23 +143,25 @@ def discover(tables: dict[str, pd.DataFrame], labels: pd.DataFrame | None = None
     keys = []
     for ref, p in prof.items():
         unique = p["distinct"] / p["nonblank"] if p["nonblank"] else 0.0
-        if (p["nonblank"] and unique >= KEY_UNIQUE and p["blank_rate"] <= KEY_MAX_BLANK
-                and _identifier_like(p, ref_label[ref]) and not _excluded(p, ref_label[ref])):
+        if p["nonblank"] and unique >= KEY_UNIQUE and p["blank_rate"] <= KEY_MAX_BLANK \
+                and _identifier_like(p, ref_label[ref]):
             keys.append({"column": ref, "unique_ratio": round(unique, 4), "null_rate": round(p["blank_rate"], 4)})
 
     joins = {}
     for k in keys:
         parent, ptable = prof[k["column"]], k["column"].split(".", 1)[0]
+        if _dense_integers(parent):
+            continue
         pset = set(parent["values"])
         for ref, child in prof.items():
-            if (ref.split(".", 1)[0] == ptable or child["distinct"] < MIN_CHILD_DISTINCT
-                    or _excluded(child, ref_label[ref])):
+            if ref.split(".", 1)[0] == ptable or child["distinct"] < MIN_CHILD_DISTINCT \
+                    or not _identifier_like(child, ref_label[ref]):
                 continue
             agree = _format_agree(parent, child)
             if agree < SHAPE_AGREE:
                 continue
             # cheap sample containment before the full set test
-            if sum(v in pset for v in child["sample"]) / len(child["sample"]) < COVERAGE - .1:
+            if _share(child["sample"], pset.__contains__) < COVERAGE - .1:
                 continue
             m = _measure_join(parent, child)
             if m["coverage"] >= COVERAGE:
@@ -111,21 +171,7 @@ def discover(tables: dict[str, pd.DataFrame], labels: pd.DataFrame | None = None
         if (c, p) in joins and (prof[p]["distinct"], c) < (prof[c]["distinct"], p):
             del joins[(p, c)]
 
-    subject_keys = {}
-    for t, df in sorted(tables.items()):
-        ranked = []
-        for i, c in enumerate(df.columns):
-            role, sub = ref_label[f"{t}.{c}"] or (None, None)
-            tier = 0 if role == "direct_identifier" and sub == "NATIONAL_ID" else \
-                1 if role == "technical_identifier" and sub in PERSON_IDS else None
-            p = prof[f"{t}.{c}"]
-            if tier is not None and p["nonblank"] and p["distinct"] / p["nonblank"] < SUBJECT_MAX_DISTINCT \
-                    and (p["counts"] >= 2).any():
-                ranked.append((tier, i, f"{t}.{c}"))
-        if ranked:
-            subject_keys[t] = min(ranked)[2]
-
-    conflicts = []
+    conflicts, notices = [], []
     declared = declared or {}
     for pref, cref in declared.get("joins", []):
         missing = [r for r in (pref, cref) if r not in prof]
@@ -142,17 +188,29 @@ def discover(tables: dict[str, pd.DataFrame], labels: pd.DataFrame | None = None
             del joins[other]
         joins[(pref, cref)] = {"parent": pref, "child": cref, **m, "declared": True}
 
-    by_size = sorted(subject_keys, key=lambda t: (-len(tables[t]), t))
-    subject_key = subject_keys[by_size[0]] if by_size else None
-    if declared.get("subject_key"):
-        subject_key = declared["subject_key"]
-        if subject_key not in prof:
-            conflicts.append(f"declared subject key {subject_key}: column not found")
+    if labels is None:
+        paths = {}
+        notices.append(NO_LABELS)
+    else:
+        paths = _subjects(tables, prof, ref_label, {j: v for j, v in joins.items() if v["coverage"] >= COVERAGE})
+    by_size = sorted(paths, key=lambda t: (-len(tables[t]), t))
+    subject_key = paths[by_size[0]][-1] if by_size else None
+    want = declared.get("subject_key")
+    if want:
+        if want not in prof:
+            conflicts.append(f"declared subject key {want}: column not found")
         else:
-            subject_keys[subject_key.split(".", 1)[0]] = subject_key
+            if not _repeats(prof[want]):
+                conflicts.append(f"declared subject key {want}: values do not repeat across rows")
+            paths[want.split(".", 1)[0]] = [want]
+        if subject_key is not None and subject_key != want:
+            conflicts.append(f"declared subject key {want} contradicts discovered {subject_key}")
+        subject_key = want
 
     return {"keys": sorted(keys, key=lambda k: k["column"]),
             "joins": [joins[j] for j in sorted(joins)],
-            "subject_keys": dict(sorted(subject_keys.items())),
+            "subject_keys": {t: p[-1] for t, p in sorted(paths.items())},
+            "subject_paths": dict(sorted(paths.items())),
             "subject_key": subject_key,
-            "conflicts": sorted(conflicts)}
+            "conflicts": sorted(conflicts),
+            "notices": notices}
