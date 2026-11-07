@@ -93,8 +93,11 @@ def main(argv=None):
     s = sub.add_parser("train")
     s.add_argument("--root", default=argparse.SUPPRESS)
     s.add_argument("--out", required=True)
-    s = sub.add_parser("infer")
+    from .deploy import TRUST_WARNING
+    s = sub.add_parser("infer", description="Label one dataset from a trained model dir. " + TRUST_WARNING)
     s.add_argument("--model", required=True)
+    s.add_argument("--model-sha256", help="pinned sha256 of model.pkl (or env DETECT_MODEL_SHA256); checked before "
+                                          "the pickle is loaded")
     s.add_argument("--data", required=True)
     s.add_argument("--out", required=True)
     s.add_argument("--no-llm", action="store_true")
@@ -111,7 +114,7 @@ def main(argv=None):
             m = deploy.train(root, a.out)
             print(f"model {m['model_sha256'][:12]} ({m['version']}) trained on {m['training_datasets']} -> {a.out}")
         elif a.cmd == "infer":
-            m = deploy.infer(a.model, a.data, a.out, llm=not a.no_llm)
+            m = deploy.infer(a.model, a.data, a.out, llm=not a.no_llm, model_sha256=a.model_sha256)
             print(f"{m['dataset']} ({m['dataset_fingerprint'][:12]}) -> {a.out}")
         else:
             r = deploy.benchmark(root, a.labels, a.datasets.split(",") if a.datasets else None)
