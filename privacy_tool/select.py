@@ -109,8 +109,11 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
     for j in requirements.get("joins") or []:
         a, b = j["columns"]
         if frozenset((a, b)) not in discovered:
-            warnings.append(f"join {a} = {b} is needed by {', '.join(j.get('tasks', []))} but was not discovered; "
-                            "coverage is unverified")
+            if j.get("kind", "declared") == "same_name":  # an unconfirmed name match must not widen a token domain
+                warnings.append(f"{a} = {b} share a name in {', '.join(j.get('tasks', []))} but relations found no "
+                                "join; not treated as a join")
+                continue
+            warnings.append(f"declared join {a} = {b} was not discovered; coverage is unverified")
         doms.union(a, b)
         join_refs |= {a, b}
 
@@ -151,7 +154,7 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
                 (errors if ref in required else warnings).append(f"{ref} has no label")
             req, in_join = ref in required, ref in join_refs
             try:
-                cand = policy.candidates(l, trust, req, in_join, precision.get(ref))
+                cand = policy.candidates(l, trust, req, in_join, precision.get(ref), k=tg.get("k"))
             except ValueError as e:
                 errors.append(f"{ref}: {e}")
                 continue
@@ -206,7 +209,7 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
     for c in plan_cols:
         bad = policy.violations({"privacy_role": c["privacy_role"], "subtype": c["subtype"],
                                  "confidence": c["confidence"]},
-                                {"action": c["action"], "method": c["method"], "params": c["params"]}, trust) \
+                                {"action": c["action"], "method": c["method"], "params": c["params"]}, trust, k=tg.get("k")) \
             if c["action"] != "DROP" else []
         errors += [f"{c['table']}.{c['column']}: {b}" for b in bad]
 

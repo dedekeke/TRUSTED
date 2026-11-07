@@ -122,3 +122,12 @@ def test_deterministic_and_no_raw_values():
     assert json.dumps(a) == json.dumps(b)
     for raw in ("010180-901A", "Anna Virtanen", "Turku", "V1"):
         assert raw not in text
+
+
+def test_unconfirmed_same_name_join_does_not_share_domain():
+    tables, labels, rel, req = inputs()
+    rel["joins"] = []
+    plan = select(tables, labels, rel, req)
+    c = by_ref(plan)
+    assert c["labs.vid"]["action"] == "DROP" or c["labs.vid"]["params"]["domain"] != c["visits.vid"]["params"]["domain"]
+    assert any("not treated as a join" in w for w in plan["warnings"])

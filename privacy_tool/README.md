@@ -15,9 +15,22 @@ Tables are `dict[str, pandas.DataFrame]` read with `dtype=str, keep_default_na=F
 | `relations` | `discover(tables, labels=None, declared=None)` | `{"keys": [{"column", "unique_ratio", "null_rate"}], "joins": [{"parent", "child", "coverage", "orphans", "confidence"[, "declared"]}], "subject_keys": {table: "t.c"}, "subject_paths": {table: ["t.c", ...]}, "subject_key": "t.c" or None, "conflicts": [str], "notices": [str]}`. `subject_keys[t]` is the person column, possibly in a joined table (`subject_paths[t]` = child, parent, ..., subject). Subject keys need labels: without them `subject_keys` is empty and `notices` says so. `declared = {"joins": [[parent, child]], "subject_key": "t.c"}` overrides discovery; problems go to `conflicts` |
 | `requirements` | `from_scenario(scenario_id, tables, root, probe=True, tolerance=0.05)`, `from_spec(path)`, `no_purpose(trust_level, dataset)` | `{"source", "scenario", "dataset", "trust_level", "targets", "targets_text", "tasks": [{"id", "table", "columns", "any_of", "precision", "evidence": {"declared", "parsed", "probed"}}], "required": {"t.c": [task ids]}, "any_of": [[["t.a"], ["t.b", "t.c"]]] (groups of alternatives, each a list of refs all needed), "precision": {"t.c": "hour"}, "joins": [{"columns", "tasks", "kind": "same_name" or "declared"}], "subject_key", "warnings"}`; select must confirm `same_name` joins with `relations.discover` before forcing a shared key domain |
 | `policy` | `candidates(label, trust_level, required, in_join=False, precision=None, k=None)`, `targets(trust_level, scenario_targets=None)`, `violations(label, rung, trust_level, k=None)` | `{"rungs": [{"action", "method", "params", "level"}] finest first, "needs_review", "escalate", "notes"}`; targets `{"k", "l"?, "free_text"?, "max_suppression", "notes"}` (notes list any loosening by the scenario); violations = breaches, accepting only DROP or a rung `candidates` offers. `METHODS` = operations `transform` must implement |
-| `select` | `select(tables, labels, relations, requirements)` | Plan dict (`decisions.json`), status `ready_for_transform` or `blocked` |
+| `select` | `select(tables, labels, relations, requirements, release_id=None)`, `confirm(labels, confirmed)`, `render(plan)` | Plan dict (`decisions.json`): `tables` (RELEASE/WITHHOLD + record_key), one `columns` entry per released source column (chosen rung + all `rungs`), `derived`, `domains`, `review_queue`, `warnings`, `errors`; status `ready_for_transform` or `blocked` |
 | `transform` | `apply(tables, plan, key, out_dir)` | Protected tables + private row maps in a fresh directory |
 | `search` | `search(tables, plan, requirements, key)` | Plan with chosen rungs, measured results and trace |
+
+## End to end
+
+```bash
+python -m privacy_tool select --data <root>/data/health --scenario HEALTH-S1 \
+    --confirm privacy_tool/examples/health_s1_confirmed.csv --out run/select
+PRIVACY_TOOL_HMAC_KEY=... python -m privacy_tool transform --data <root>/data/health \
+    --plan run/select/decisions.json --out run/release
+pets-eval scorecard --original <root>/data/health --protected run/release/evaluation --scenario HEALTH-S1
+```
+
+`--confirm` is the human-review step: required columns whose label is uncertain block the plan until a reviewer
+confirms them. `run/release/evaluation/` holds private row maps: never publish it.
 
 ## Detect
 
