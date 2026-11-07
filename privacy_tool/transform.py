@@ -97,7 +97,7 @@ def apply_column(s: pd.Series, d: dict, key: bytes, release_id: str, df: pd.Data
         return None, 0
     if action == "KEEP":
         out = s
-    elif action == "HMAC":
+    elif action == "HMAC" and method != "ipv4_prefix":
         out = hmac_token(s, key, f"{release_id}/{p['domain']}", d.get("subtype", ""))
     elif action == "REDACT":
         ids = [c for c in (plan_columns or []) if c["table"] == d["table"] and c.get("subtype") in ROW_VALUE_LABELS]

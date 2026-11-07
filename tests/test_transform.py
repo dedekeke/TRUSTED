@@ -117,3 +117,8 @@ def test_numeric_and_rare_methods():
         ["other", "2", "2", "other", "", "other"]
     assert list(apply_column(pd.Series(["12345", ""]), col("t", "c", "GENERALISE", "postcode_prefix", digits=3), KEY, "x")[0]) == ["123", ""]
     assert list(apply_column(pd.Series(["37.25", "x"]), col("t", "c", "GENERALISE", "round_numeric", step=0.5), KEY, "x")[0]) == ["37", ""]
+
+
+def test_ipv4_prefix_under_hmac_action():
+    out = apply_column(pd.Series(["10.1.2.3", "", "bad"]), col("t", "c", "HMAC", "ipv4_prefix"), KEY, "x")[0]
+    assert list(out) == ["10.1.2.0", "", ""]
