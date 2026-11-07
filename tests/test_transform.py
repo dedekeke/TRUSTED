@@ -122,3 +122,51 @@ def test_numeric_and_rare_methods():
 def test_ipv4_prefix_under_hmac_action():
     out = apply_column(pd.Series(["10.1.2.3", "", "bad"]), col("t", "c", "HMAC", "ipv4_prefix"), KEY, "x")[0]
     assert list(out) == ["10.1.2.0", "", ""]
+
+
+def test_generalisers_never_pass_raw_values_through():
+    def run(vals, method, action="GENERALISE", **p):
+        return list(apply_column(pd.Series(vals), col("t", "c", action, method, **p), KEY, "x")[0])
+    assert run(["20100", "99", "FI-00100"], "postcode_prefix", digits=3) == ["201", "", ""]
+    assert run(["J18.9", "Mikko Laine", ""], "icd_3char") == ["J18", "", ""]
+    assert run(["J18.9", "x1"], "icd_chapter") == ["J", ""]
+    assert run(["10.1.2.3", "host.0", "12345.0"], "ipv4_prefix") == ["10.1.2.0", "", ""]
+    assert run(["1234567.85", "2.5"], "round_decimals", digits=1) == ["1234567.8", "2.5"]  # no exponent notation
+    assert run(["34", "-3", "30-39", "80+"], "age_band", width=10, top=80) == ["30-39", "", "30-39", "80+"]
+    assert run(["2025-12-29 08:00", "x"], "iso_week") == ["2026-W01", ""]
+    assert run(["2025-12-29 08:00"], "month") == ["2025-12"] and run(["2025-12-29"], "year") == ["2025"]
+    assert run(["a", "a", "b"], "suppress_rare", min_count=2) == ["a", "a", ""]
+    clipped = run([str(i) for i in range(100)], "top_bottom_code", lower_q=.1, upper_q=.9)
+    assert clipped[0] == clipped[5] and clipped[-1] == clipped[-5]
+
+
+def test_fail_closed_plan_contracts(tmp_path):
+    with pytest.raises(ValueError):
+        apply_column(pd.Series(["1"]), col("t", "c", "HMAC", "hmac_sha256", domain=None), KEY, "x")
+    with pytest.raises(ValueError):
+        apply_column(pd.Series([1, 2]), col("t", "c", "HMAC", "hmac_sha256", domain="d"), KEY, "x")
+    with pytest.raises(ValueError):
+        apply(tables(), {**plan(), "release_id": ""}, KEY)
+    with pytest.raises(ValueError):
+        apply(tables(), {**plan(), "status": "draft"}, KEY)
+    with pytest.raises(ValueError):
+        apply(tables(), plan(), KEY, tmp_path / "out", tmp_path / "out" / "eval")
+    bad = plan()
+    bad["derived"][0]["column"] = "dob"
+    with pytest.raises(ValueError):
+        apply(tables(), bad, KEY)
+    nokey = plan()
+    nokey["tables"]["labs"]["record_key"] = None
+    with pytest.raises(ValueError):
+        apply(tables(), nokey, KEY, tmp_path / "p", tmp_path / "e")
+
+
+def test_key_never_written(tmp_path):
+    apply(tables(), plan(), KEY, tmp_path / "p", tmp_path / "e")
+    for f in tmp_path.rglob("*.csv"):
+        assert KEY.decode() not in f.read_text()
+
+
+def test_redaction_addresses_daymonth_and_bad_checksum_ids():
+    out = redact("Asuu Kangaspolku 6 A 1, 20100 Turku. Käynti 29.12. ja 010180-9999 tarkistettu")
+    assert "Kangaspolku" not in out and "29.12." not in out and "010180-9999" not in out

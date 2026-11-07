@@ -20,13 +20,20 @@ import numpy as np
 import pandas as pd
 
 from pets_eval import parse as Pz
-from pets_eval.check import PATTERNS, VALIDATORS
+from pets_eval.check import PATTERNS, VALIDATORS, ip_ok
 from pets_eval.utility.health import diagnosis_group
 
 from .detect import normalise_hetu, safe_datetime
 
 TIME_FORMATS = {"floor_hour": "%Y-%m-%d %H:00", "date": "%Y-%m-%d", "iso_week": "%G-W%V", "month": "%Y-%m", "year": "%Y"}
-DATE_RX = re.compile(r"\b\d{1,2}[./]\d{1,2}[./](\d{4}|\d{2})\b|\b\d{4}-\d{2}-\d{2}\b")
+DATE_RX = re.compile(r"\b\d{1,2}[./]\d{1,2}[./](\d{4}|\d{2})\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\.\d{1,2}\.(?!\d)")
+# street + house number (+ staircase/flat), e.g. "Kangaspolku 6 A 1": capitalised word with a street suffix
+ADDRESS_RX = re.compile(r"\b[A-ZÅÄÖ][a-zåäö]*(?:tie|katu|kuja|polku|rinne|väylä|kaari|mäki|ranta|puisto|piha|tori|"
+                        r"vägen|gatan|gränd|stigen|aukio|kallio|niitty|ahde|harju|linja|laakso|kulma)\s\d+[a-z]?"
+                        r"(?:\s?[A-Z]\s?\d+)?(?:,?\s\d{5}(?:\s[A-ZÅÄÖ][a-zåäö]+)?)?")
+OK_STATUS = {"ready_for_transform", "target_unmet", "measured_ok"}
+DIAGNOSIS_MAPPING = "pets_eval.utility.health.diagnosis_group"
+ICD_RX = r"^[A-Z]\d{2}"
 NAME_PAIR_RX = re.compile(r"\b[A-ZÅÄÖ][a-zåäöé]+(?:-[A-ZÅÄÖ][a-zåäöé]+)?\s[A-ZÅÄÖ][a-zåäöé]+(?:-[A-ZÅÄÖ][a-zåäöé]+)?\b")
 SPAN_LABEL = {"NATIONAL_ID": "NATIONAL_ID", "IBAN": "IBAN", "PAYMENT_CARD": "PAYMENT_CARD", "EMAIL": "EMAIL",
               "PHONE": "PHONE", "IP_ADDRESS": "IP_ADDRESS", "IPV6": "IP_ADDRESS", "MAC_ADDRESS": "DEVICE_ID",
@@ -62,7 +69,7 @@ def _numeric(s: pd.Series) -> pd.Series:
 
 
 def _fmt(x: pd.Series) -> pd.Series:
-    return x.map(lambda v: "" if pd.isna(v) else (str(int(v)) if float(v).is_integer() else f"{v:g}"))
+    return x.map(lambda v: "" if pd.isna(v) else np.format_float_positional(float(v), precision=10, trim="-"))
 
 
 def _rare(s: pd.Series, min_count: int, replacement: str) -> pd.Series:
@@ -80,10 +87,11 @@ def redact(text: str, row_values: dict | None = None) -> str:
             text = re.sub(re.escape(v.strip()), f"[{label}]", text, flags=re.I)
             if label == "PERSON":
                 for part in v.replace(",", " ").split():
-                    if len(part) >= 3 and part[0].isupper():
-                        text = re.sub(rf"\b{re.escape(part)}\b", "[PERSON]", text)
+                    if len(part) >= 2:
+                        text = re.sub(rf"\b{re.escape(part)}\b", "[PERSON]", text, flags=re.I)
+    text = ADDRESS_RX.sub("[ADDRESS]", text)
     for name, rx in PATTERNS.items():
-        ok = VALIDATORS.get(name)
+        ok = None if name == "NATIONAL_ID" else VALIDATORS.get(name)  # over-redact ID-shaped strings
         text = rx.sub(lambda m: m.group(0) if ok and not ok(m.group(1)) else f"[{SPAN_LABEL[name]}]", text)
     text = DATE_RX.sub("[DATE]", text)
     return NAME_PAIR_RX.sub("[PERSON]", text)
@@ -98,18 +106,24 @@ def apply_column(s: pd.Series, d: dict, key: bytes, release_id: str, df: pd.Data
     if action == "KEEP":
         out = s
     elif action == "HMAC" and method != "ipv4_prefix":
+        if not p.get("domain"):
+            raise ValueError(f"HMAC without a token domain for {d['table']}.{d['column']}")
+        if pd.api.types.is_numeric_dtype(s):
+            raise ValueError(f"{d['table']}.{d['column']} must be read as strings before tokenising")
         out = hmac_token(s, key, f"{release_id}/{p['domain']}", d.get("subtype", ""))
     elif action == "REDACT":
         ids = [c for c in (plan_columns or []) if c["table"] == d["table"] and c.get("subtype") in ROW_VALUE_LABELS]
-        rows = [{ROW_VALUE_LABELS[c["subtype"]]: [df[c["column"]].iloc[i]] for c in ids} for i in range(len(s))] \
-            if df is not None else [None] * len(s)
+        recs = df[[c["column"] for c in ids]].to_dict("records") if df is not None else [{}] * len(s)
+        rows = [{ROW_VALUE_LABELS[c["subtype"]]: [r[c["column"]]] for c in ids} for r in recs]
         out = pd.Series([redact(t, r) for t, r in zip(s.tolist(), rows)], index=s.index)
     elif method in TIME_FORMATS:
         out = _time(s, method)
     elif method == "age_band":
-        out = Pz.to_age_band(_numeric(s), width=p.get("width", 10), top=p.get("top", 80)).fillna("")
+        x = _numeric(s)
+        out = Pz.to_age_band(x.where(x >= 0), width=p.get("width", 10), top=p.get("top", 80)).fillna("")
     elif method == "postcode_prefix":
-        out = s.astype(str).str.strip().str[: p["digits"]].where(~_blank(s), "")
+        code = s.astype(str).str.strip()
+        out = code.str[: p["digits"]].where(code.str.fullmatch(r"\d{5}"), "")  # only valid 5-digit codes
     elif method == "suppress_rare":
         out = _rare(s, p["min_count"], "")
     elif method == "merge_rare":
@@ -121,15 +135,16 @@ def apply_column(s: pd.Series, d: dict, key: bytes, release_id: str, df: pd.Data
     elif method == "top_bottom_code":
         x = _numeric(s)
         out = _fmt(x.clip(x.quantile(p.get("lower_q", .01)), x.quantile(p.get("upper_q", .99))))
-    elif method == "icd_3char":
-        out = s.astype(str).str.replace(".", "", regex=False).str.strip().str.upper().str[:3].where(~_blank(s), "")
-    elif method == "icd_chapter":
-        out = s.astype(str).str.strip().str.upper().str[:1].where(~_blank(s), "")
+    elif method in ("icd_3char", "icd_chapter"):
+        code = s.astype(str).str.replace(".", "", regex=False).str.strip().str.upper()
+        out = code.str[: 3 if method == "icd_3char" else 1].where(code.str.match(ICD_RX), "")
     elif method == "diagnosis_group":
+        if p.get("mapping", DIAGNOSIS_MAPPING) != DIAGNOSIS_MAPPING:
+            raise ValueError(f"unsupported diagnosis mapping {p['mapping']}")
         out = diagnosis_group(s.where(~_blank(s))).fillna("")
-    elif method == "ipv4_prefix":
-        out = s.astype(str).str.replace(r"^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$", r"\1.0", regex=True)
-        out = out.where(out.str.endswith(".0") & ~_blank(s), "")
+    elif method == "ipv4_prefix":  # generalise to the /24 network
+        ip = s.astype(str).str.strip()
+        out = ip.str.replace(r"\.\d{1,3}$", ".0", regex=True).where(ip.map(lambda v: ip_ok(v) and v.count(".") == 3), "")
     else:
         raise ValueError(f"unsupported operation {action}/{method} for {d['table']}.{d['column']}")
     lost = int((~_blank(s) & _blank(out.astype(str))).sum()) if method not in ("suppress_rare",) else 0
@@ -150,11 +165,17 @@ def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path
     (private: never publish). Both directories must not exist yet."""
     if not key:
         raise ValueError("an HMAC key is required (pass it from an environment variable)")
-    if plan.get("status") == "blocked":
-        raise ValueError("plan is blocked; fix its errors before transforming")
+    if plan.get("status") not in OK_STATUS:
+        raise ValueError(f"plan status {plan.get('status')!r} is not executable; fix its errors first")
+    if not plan.get("release_id"):
+        raise ValueError("plan needs a release_id (scenario/recipient) to scope pseudonyms")
     for d in (out_dir, eval_dir):
         if d is not None and Path(d).exists():
             raise FileExistsError(f"refusing to write into existing {d}")
+    if out_dir is not None and eval_dir is not None:
+        o, e = Path(out_dir).resolve(), Path(eval_dir).resolve()
+        if o == e or o in e.parents or e in o.parents:
+            raise ValueError("eval_dir (row maps) must be outside the shareable out_dir")
     out, stats = {}, {"blanked": {}, "rows": {}}
     cols = plan["columns"]
     for t, td in sorted(plan["tables"].items()):
@@ -165,7 +186,12 @@ def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path
         for dv in (x for x in plan.get("derived", []) if x["table"] == t):
             if dv["method"] != "derive_age_band":
                 raise ValueError(f"unsupported derivation {dv['method']}")
+            if dv["column"] in src.columns:
+                raise ValueError(f"derived column {t}.{dv['column']} would collide with a source column")
             res[dv["column"]] = derive_age_band(src, *dv["sources"], **(dv.get("params") or {}))
+            lost = int((res[dv["column"]] == "").sum())
+            if lost:
+                stats["blanked"][f"{t}.{dv['column']}"] = lost
         for d in (c for c in cols if c["table"] == t):
             if d["column"] not in src.columns:
                 raise ValueError(f"plan column {t}.{d['column']} missing from source")
@@ -185,7 +211,9 @@ def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path
     if eval_dir is not None:
         for t in out:
             rk = plan["tables"][t].get("record_key")
-            ids = tables[t][rk].astype(str).values if rk else np.arange(len(tables[t])).astype(str)
+            if not rk:  # positional ids match nothing in the scorer and would report false zero risk
+                raise ValueError(f"table {t} needs a record_key for its scoring row map")
+            ids = tables[t][rk].astype(str).values
             pd.DataFrame({"protected_row": np.arange(len(out[t])), "original_record_id": ids}).to_csv(
                 Path(eval_dir) / f"rowmap_{t}.csv", index=False)
     return out, stats
