@@ -228,12 +228,12 @@ def test_unsupported_vocabulary_pair_is_named(tmp_path):
 
 def test_suggested_subject_is_reported_not_adopted(tmp_path):
     data = write_data(tmp_path)
-    subject = {'relation_id': 's1', 'kind': 'subject', 'left': {'table': 'people', 'column': 'score'}, 'right': None,
+    subject = {'relation_id': 'ab12ab12ab12ab12', 'kind': 'subject', 'left': {'table': 'people', 'column': 'score'}, 'right': None,
                'evidence': {}, 'confidence': .5, 'needs_review': True}
     lab = write_detect_dir(tmp_path / 'detect', data, labels(), [note_span(data)], [subject])
     assert run_select(tmp_path, data, lab) == 0
     p = plan(tmp_path)
-    assert any(w.startswith('ambiguous_subject: detect relation s1') for w in p['warnings'])
+    assert any(w.startswith('ambiguous_subject: detect relation ab12ab12ab12ab12') for w in p['warnings'])
     assert 'people.score' not in p['subject_keys'].values() and p['evidence']['linkage']['subjects'] == 1
 
 
@@ -295,3 +295,79 @@ def test_selection_never_reads_catalog_truth_or_gold_spans(env, monkeypatch):
     assert run_select(tmp, data, lab) == 0
     assert main(['search', '--data', str(data), '--plan', str(tmp / 'select' / 'decisions.json'),
                  '--out', str(tmp / 'search')]) == 0
+
+
+# ---------------------------------------------------------------- review fixes
+
+def test_scanned_clean_free_text_column_is_not_missing_evidence(tmp_path):
+    data = write_data(tmp_path)
+    clean = {'people.note': {'cells': 3, 'spans': 0}}
+    lab = write_detect_dir(tmp_path / 'clean', data, labels(), scanned=clean)
+    assert run_select(tmp_path, data, lab, out='a', required=('people.score', 'people.note')) == 0
+    assert not any('missing_span_evidence' in x for x in plan(tmp_path, 'a')['errors'] + plan(tmp_path, 'a')['warnings'])
+    lab = write_detect_dir(tmp_path / 'unscanned', data, labels(), scanned={})
+    assert run_select(tmp_path, data, lab, out='b', required=('people.score', 'people.note')) == 2
+    assert any(e.startswith('missing_span_evidence: free-text column people.note') for e in plan(tmp_path, 'b')['errors'])
+
+
+def test_missing_linkage_warns_and_blocks_released_join_or_subject_keys(tmp_path):
+    data = write_data(tmp_path)
+    lab = write_detect_dir(tmp_path / 'detect', data, labels(), [note_span(data)], linkage=False)
+    assert run_select(tmp_path, data, lab, out='a') == 0
+    p = plan(tmp_path, 'a')
+    assert any(w.startswith('missing_linkage_evidence') for w in p['warnings']) and not p['evidence']['linkage']['present']
+    assert run_select(tmp_path, data, lab, out='b', required=('people.score', 'people.id')) == 2
+    assert any(e.startswith('missing_linkage_evidence') and 'people.id' in e for e in plan(tmp_path, 'b')['errors'])
+
+
+def test_bound_labels_need_review_column(tmp_path, capsys):
+    data = write_data(tmp_path)
+    lab = write_detect_dir(tmp_path / 'detect', data, labels().drop(columns='needs_review'), [note_span(data)])
+    assert run_select(tmp_path, data, lab) == 2
+    rejected(capsys, 'labels_schema')
+
+
+def test_artifact_free_strings_are_never_echoed(tmp_path):
+    data = write_data(tmp_path)
+    bad_span = {**note_span(data), 'span_id': 'Anna Virtanen', 'end': 999}
+    rel = {**join('Anna Virtanen r1', review=True), 'left': {'table': 'people', 'column': 'Anna Virtanen'}}
+    subject = {'relation_id': 'Mikko', 'kind': 'subject', 'left': {'table': 'x', 'column': 'Laine'}, 'right': None}
+    lab = write_detect_dir(tmp_path / 'detect', data, labels(), [bad_span], [rel, subject])
+    assert run_select(tmp_path, data, lab) == 2
+    text = (tmp_path / 'select' / 'decisions.json').read_text() + render_md(tmp_path)
+    assert 'Anna' not in text and 'Mikko' not in text and 'Laine' not in text
+    p = plan(tmp_path)
+    assert any('line 1' in e for e in p['errors']) and p['evidence']['linkage']['ambiguous'] == ['relation 0', 'relation 1']
+
+
+@pytest.mark.parametrize('breakage', ['entry', 'linkage'])
+def test_malformed_manifest_entry_or_linkage_json_is_named(tmp_path, capsys, breakage):
+    data = write_data(tmp_path)
+    lab = write_detect_dir(tmp_path / 'detect', data, labels(), [note_span(data)])
+    manifest_path = lab.parent / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    if breakage == 'entry':
+        manifest['artifacts']['spans'] = 'spans.jsonl'
+    else:
+        (lab.parent / 'linkage.json').write_text('{not json')
+        manifest['artifacts']['linkage']['sha256'] = hashlib.sha256(b'{not json').hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+    assert run_select(tmp_path, data, lab) == 2
+    rejected(capsys, 'manifest_schema')
+
+
+def test_non_sensitive_url_in_a_person_table_is_not_kept_raw(tmp_path):
+    from server.select.relations import discover
+    from server.select.select import select
+    tables = {'people': pd.DataFrame({'id': ['p1', 'p2'], 'name': ['A B', 'C D'], 'site': ['u1', 'u2'],
+                                      'zip': ['20100', '20200'], 'score': ['1', '2']})}
+    lab = pd.DataFrame([{'dataset': 'demo', 'table': 'people', 'column': c, 'privacy_role': r, 'subtype': s,
+                         'confidence': .95, 'evidence': ''}
+                        for c, r, s in [('id', 'record_key', 'PATIENT_ID'), ('name', 'direct_identifier', 'PERSON_NAME'),
+                                        ('site', 'non_sensitive', 'URL'), ('zip', 'non_sensitive', 'POSTCODE'),
+                                        ('score', 'non_sensitive', 'MEASUREMENT')]])
+    req = {'source': 'none', 'dataset': 'demo', 'trust_level': 'internal', 'required': {}}
+    cols = {c['column']: c for c in select(tables, lab, discover(tables, lab), req)['columns']}
+    assert cols['site']['privacy_role'] == 'quasi_identifier' and cols['site']['action'] == 'DROP'
+    assert cols['zip']['privacy_role'] == 'quasi_identifier' and cols['zip']['action'] == 'DROP'
+    assert cols['score']['action'] == 'KEEP'

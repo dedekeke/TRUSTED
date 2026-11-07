@@ -122,10 +122,20 @@ def test_target_unmet_only_when_candidate_space_covered():
 def test_measured_ok_is_the_only_approved_status():
     tables, labels, rel, req = inputs()
     req['targets'] = {'k': 1}
-    out = search(tables, select(tables, labels, rel, req), KEY, [hour_task(), big_city_task()], tables)
+    plan = select(tables, labels, rel, req)
+    out = search(tables, {**plan, 'provenance': {'bound': True}}, KEY, [hour_task(), big_city_task()], tables)
     assert out['status'] == 'measured_ok'
     assert out['outcome']['approved'] is True and out['outcome']['targets_met'] and out['outcome']['violations'] == []
     assert 'Approved release: **yes**' in render(out)
+
+
+def test_unbound_plan_is_never_approved():
+    tables, labels, rel, req = inputs()
+    req['targets'] = {'k': 1}
+    out = search(tables, select(tables, labels, rel, req), KEY, [hour_task(), big_city_task()], tables)
+    assert out['status'] == 'measured_ok' and out['outcome']['approved'] is False
+    assert out['outcome']['issues'] == ['provenance_unbound']
+    assert 'provenance_unbound' in render(out) and 'Approved release: **no**' in render(out)
 
 
 def test_no_tasks_uses_information_loss_and_preserves_unknown_subjects():
@@ -416,6 +426,7 @@ def test_search_cli_writes_decisions_and_diagnostics_without_export(tmp_path, mo
     measured = json.loads((out / 'decisions.json').read_text())
     assert measured['measured']['evaluations'] == 2 and measured['status'] == 'budget_exhausted'
     assert measured['provenance']['bound'] is False and len(measured['plan_sha256']) == 64
+    assert measured['outcome']['approved'] is False and 'provenance_unbound' in measured['outcome']['issues']
     assert {p.name for p in out.iterdir()} == {'decisions.json', 'decisions.md'}
     assert 'unresolved subject identity' in capsys.readouterr().out
 

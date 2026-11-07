@@ -31,7 +31,8 @@ DATE_RX = re.compile(r"\b\d{1,2}[./]\d{1,2}[./](\d{4}|\d{2})\b|\b\d{4}-\d{2}-\d{
 ADDRESS_RX = re.compile(r"\b[A-ZÅÄÖ][a-zåäö]*(?:tie|katu|kuja|polku|rinne|väylä|kaari|mäki|ranta|puisto|piha|tori|"
                         r"vägen|gatan|gränd|stigen|aukio|kallio|niitty|ahde|harju|linja|laakso|kulma)\s\d+[a-z]?"
                         r"(?:\s?[A-Z]\s?\d+)?(?:,?\s\d{5}(?:\s[A-ZÅÄÖ][a-zåäö]+)?)?")
-OK_STATUS = {"policy_valid", "target_unmet", "measured_ok"}
+UNAPPROVED_STATUS = {"policy_valid", "target_unmet", "budget_exhausted", "measured_ok"}  # need --allow-unapproved
+UNAPPROVED_NOTICE = "NOT_APPROVED.txt"
 DIAGNOSIS_MAPPING = "pets_eval.utility.health.diagnosis_group"
 ICD_RX = r"^[A-Z]\d{2}"
 NAME_PAIR_RX = re.compile(r"\b[A-ZÅÄÖ][a-zåäöé]+(?:-[A-ZÅÄÖ][a-zåäöé]+)?\s[A-ZÅÄÖ][a-zåäöé]+(?:-[A-ZÅÄÖ][a-zåäöé]+)?\b")
@@ -185,15 +186,19 @@ def check_plan(tables: dict[str, pd.DataFrame], plan: dict) -> None:
 
 
 def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path | None = None,
-          eval_dir: Path | None = None) -> tuple[dict[str, pd.DataFrame], dict]:
+          eval_dir: Path | None = None, allow_unapproved: bool = False) -> tuple[dict[str, pd.DataFrame], dict]:
     """Protected tables (original names, retained column names, original row order) and per-column stats.
 
     Writes <out_dir>/<table>.csv (shareable) and, for scoring only, <eval_dir>/<table>.csv + rowmap_<table>.csv
     (private: never publish). Both directories must not exist yet."""
     if not key:
         raise ValueError("an HMAC key is required (pass it from an environment variable)")
-    if plan.get("status") not in OK_STATUS:
-        raise ValueError(f"plan status {plan.get('status')!r} is not executable; fix its errors first")
+    status = plan.get("status")
+    approved = status == "measured_ok" and (plan.get("outcome") or {}).get("approved") is True
+    if not approved and (status not in UNAPPROVED_STATUS or not allow_unapproved):
+        raise ValueError(f"unapproved_plan: status {status!r} is not an approved measured_ok release"
+                         + ("; fix its errors first" if status not in UNAPPROVED_STATUS else
+                            "; pass allow_unapproved (--allow-unapproved) to export it anyway, recorded in the output"))
     if not plan.get("release_id"):
         raise ValueError("plan needs a release_id (scenario/recipient) to scope pseudonyms")
     check_plan(tables, plan)
@@ -204,7 +209,9 @@ def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path
         o, e = Path(out_dir).resolve(), Path(eval_dir).resolve()
         if o == e or o in e.parents or e in o.parents:
             raise ValueError("eval_dir (row maps) must be outside the shareable out_dir")
-    out, stats = {}, {"blanked": {}, "rows": {}}
+    out, stats = {}, {"blanked": {}, "rows": {},
+                      "release_gate": {"status": status, "approved": approved, "allow_unapproved": allow_unapproved,
+                                       "plan_sha256": plan.get("plan_sha256")}}
     cols = plan["columns"]
     for t, td in sorted(plan["tables"].items()):
         if td["action"] != "RELEASE" or t not in tables:
@@ -236,6 +243,9 @@ def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path
             Path(d).mkdir(parents=True)
             for t, df in out.items():
                 df.to_csv(Path(d) / f"{t}.csv", index=False)
+            if not approved:
+                (Path(d) / UNAPPROVED_NOTICE).write_text(
+                    f"NOT AN APPROVED RELEASE: plan status {status}, exported with allow_unapproved.\n")
     if eval_dir is not None:
         for t in out:
             rk = plan["tables"][t].get("record_key")

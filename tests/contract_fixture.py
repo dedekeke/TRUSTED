@@ -20,8 +20,11 @@ def span(fp, table, column, row_index, start, end, entity_type='PERSON', entity_
             'entity_type': entity_type, 'entity_id': entity_id, 'confidence': 0.9, 'needs_review': False}
 
 
-def write_detect_dir(out, data_dir, labels, spans=(), relations=(), dataset=None, vocabulary=None):
-    """labels: DataFrame; spans: dicts from span(); relations: linkage relation dicts. Returns labels.csv path."""
+def write_detect_dir(out, data_dir, labels, spans=(), relations=(), dataset=None, vocabulary=None, scanned=None,
+                     linkage=True):
+    """labels: DataFrame; spans: dicts from span(); relations: linkage relation dicts; scanned: optional
+    artifacts.spans.columns map {"t.c": {"cells", "spans"}}; linkage=False omits the linkage artifact.
+    Returns labels.csv path."""
     out = Path(out)
     out.mkdir(parents=True)
     shas, fp = fingerprint(data_dir)
@@ -40,8 +43,9 @@ def write_detect_dir(out, data_dir, labels, spans=(), relations=(), dataset=None
         'label_vocabulary': vocabulary if vocabulary is not None else
         sorted({(r, s) for r, s in zip(labels['privacy_role'], labels['subtype'])}),
         'artifacts': {'labels': art('labels.csv'),
-                      'spans': {**art('spans.jsonl'), 'schema': 'pets.detect.spans/1'},
-                      'linkage': art('linkage.json')},
+                      'spans': {**art('spans.jsonl'), 'schema': 'pets.detect.spans/1',
+                                **({'columns': scanned} if scanned is not None else {})},
+                      **({'linkage': art('linkage.json')} if linkage else {})},
         'created_at': '2026-11-07T00:00:00Z'}
     (out / 'manifest.json').write_text(json.dumps(manifest))
     return out / 'labels.csv'

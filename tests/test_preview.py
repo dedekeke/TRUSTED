@@ -20,8 +20,9 @@ def test_legacy_export_cannot_ignore_preview_operations(plan, tmp_path, monkeypa
     import json
     from server.select.__main__ import main
     from server.select import transform
+    from server.select.artifacts import provenance
     plan_path = tmp_path / 'plan.json'
-    plan_path.write_text(json.dumps(plan))
+    plan_path.write_text(json.dumps({**plan, 'provenance': provenance(tmp_path, None)}))
     def no_export(*args, **kwargs):
         pytest.fail('unsupported preview plans must be rejected before export')
     monkeypatch.setenv('PRIVACY_TOOL_HMAC_KEY', 'test-key')
