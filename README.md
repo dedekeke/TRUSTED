@@ -79,10 +79,10 @@ Optional LLM tier (Apple Silicon, ~18 GB memory; run from the folder that holds 
 hf download netprojects/AutoTrust-JEV-27B-v1.1-mlx-4bit --local-dir models/AutoTrust-JEV-27B-v1.1-mlx-4bit
 python3 -m venv .venv-jev     # separate venv: mlx, mlx-vlm and transformers stay out of the detector's
 .venv-jev/bin/pip install "git+https://github.com/internet-projects/autotrust-jev27b-mlx@5ef540537b4fc38e6b1586f321d234b465040bc9"
-.venv-jev/bin/python -m jev27b_mlx serve models/AutoTrust-JEV-27B-v1.1-mlx-4bit --port 8000
+.venv-jev/bin/python -m jev27b_mlx serve models/AutoTrust-JEV-27B-v1.1-mlx-4bit --port 8001
 ```
 
-Use the local folder, not the repo id: the server then never contacts Hugging Face. The detector finds the server at `JEV_HOST` (default `http://127.0.0.1:8000`) and refuses it unless it reports bidirectional prompt attention. Do not load the model in LM Studio, Ollama or plain `mlx_lm`: they read the prompt causally and give different answers. If the server is not running, tier 3 is skipped and tiers 1-2 still run. `DETECT_LLM_BACKEND=ollama` switches back to the previous Ollama tier (`ollama pull qwen2.5:7b`).
+Use the local folder, not the repo id: the server then never contacts Hugging Face. The detector finds the server at `JEV_HOST` (default `http://127.0.0.1:8001`; 8000 is the API server's port) and refuses it unless it reports bidirectional prompt attention. Do not load the model in LM Studio, Ollama or plain `mlx_lm`: they read the prompt causally and give different answers. If the server is not running, tier 3 is skipped and tiers 1-2 still run. `DETECT_LLM_BACKEND=ollama` switches back to the previous Ollama tier (`ollama pull qwen2.5:7b`).
 
 The organisers' package (`TRUSTED_PETS_PROVING_GROUND_2026`) is found automatically in a parent folder. To point elsewhere, set `PETS_ROOT=/path/to/TRUSTED_PETS_PROVING_GROUND_2026`.
 
