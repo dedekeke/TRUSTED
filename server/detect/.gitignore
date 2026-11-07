@@ -1,0 +1,8 @@
+# outputs and caches hold values from the (synthetic) data: never publish
+out/
+.cache/
+pets_submission/
+__pycache__/
+*.pyc
+# never publish row maps or ground truth
+rowmap_*.csv
