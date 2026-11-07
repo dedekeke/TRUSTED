@@ -13,6 +13,7 @@ TABLES = {
                             "dob": ["1980-01-01", "1990-01-01"], "flag": ["0", "1"], "pid": ["p1", "p2"],
                             "noise": ["x", "y"]}),
     "labs": pd.DataFrame({"vid": ["v1", "v2"], "code": ["A", "B"], "value": ["1", "2"]}),
+    "agg": pd.DataFrame({"grp": ["g1", "g2"], "n": ["5", "7"]}),
 }
 
 
@@ -25,11 +26,25 @@ def parse(needs, table="visits"):
 
 
 def test_should_put_pipe_alternatives_in_any_of():
-    assert parse(["flag|pid"])["any_of"] == [["visits.flag", "visits.pid"]]
+    assert parse(["flag|pid"])["any_of"] == [[["visits.flag"], ["visits.pid"]]]
 
 
-def test_should_keep_plus_alternative_as_joined_refs():
-    assert parse(["los|arrival+leave"])["any_of"] == [["visits.los", "visits.arrival+visits.leave"]]
+def test_should_keep_plus_alternative_as_list_of_refs():
+    assert parse(["los|arrival+leave"])["any_of"] == [[["visits.los"], ["visits.arrival", "visits.leave"]]]
+
+
+def test_should_resolve_unique_column_of_another_table_for_plain_need():
+    assert parse(["grp"])["required"] == ["agg.grp"]
+
+
+def test_should_not_resolve_alternative_outside_task_tables():
+    p = parse(["flag|grp"])
+    assert (p["required"], p["any_of"]) == (["visits.flag"], [])
+
+
+def test_should_leave_ambiguous_name_to_probing():
+    p = parse(["vid"], table="visits+labs")
+    assert (p["required"], "ambiguous" in p["warnings"][0]) == ([], True)
 
 
 def test_should_require_both_sides_of_plus():
@@ -98,8 +113,30 @@ def test_should_resolve_scenario_from_parsing_and_probing(fake_scenario):
     r = rq.from_scenario("X-S1", TABLES, "/nowhere")
     assert ({k: r[k] for k in ("required", "any_of", "precision", "joins", "targets")} ==
             {"required": {"labs.vid": ["J"], "visits.vid": ["J"], "visits.arrival": ["A"]},
-             "any_of": [["visits.flag", "visits.pid"]], "precision": {"visits.arrival": "hour"},
-             "joins": [{"columns": ["labs.vid", "visits.vid"], "tasks": ["J"]}], "targets": {"k": 5}})
+             "any_of": [[["visits.flag"], ["visits.pid"]]], "precision": {"visits.arrival": "hour"},
+             "joins": [{"columns": ["labs.vid", "visits.vid"], "tasks": ["J"], "kind": "same_name"}],
+             "targets": {"k": 5}})
+
+
+def scenario_with(monkeypatch, tasks):
+    scen = {"id": "Y", "dataset": "y", "trust_level": "public", "utility_requirements": [t.id for t in tasks],
+            "suggested_privacy_targets": ""}
+    monkeypatch.setattr(rq, "get_scenario", lambda sid, root: scen)
+    monkeypatch.setattr(rq, "all_tasks", lambda domains: tasks)
+    return rq.from_scenario("Y", TABLES, "/nowhere")
+
+
+def test_should_require_alternative_whose_drop_makes_task_unanswerable(monkeypatch):
+    # H-U1 shape: "icd10_primary|diagnosis_group" where only the first really works on the task's table
+    fn = lambda o, p: {"score": 1.0 if "flag" in p["visits"].columns else None}
+    r = scenario_with(monkeypatch, [task(["flag|pid"], fn=fn, id="U1")])
+    assert (r["required"], any("not answerable without it" in w for w in r["warnings"])) == (
+        {"visits.flag": ["U1"]}, True)
+
+
+def test_should_warn_when_parsed_column_has_no_probe_effect(monkeypatch):
+    r = scenario_with(monkeypatch, [task(["noise"], id="U9")])
+    assert any("no measurable effect" in w for w in r["warnings"])
 
 
 def test_should_raise_for_unknown_scenario(fake_scenario):
@@ -135,7 +172,9 @@ def test_should_load_valid_spec(tmp_path):
 
 def test_should_load_example_spec():
     r = rq.from_spec(rq.Path(rq.__file__).parent / "examples/health_s1_spec.json")
-    assert r["precision"] == {"ed_visits.arrival_ts": "hour"}
+    assert (r["precision"], r["any_of"][0], r["joins"][0]["kind"], r["tasks"][0]["evidence"]) == (
+        {"ed_visits.arrival_ts": "hour"}, [["ed_visits.los_minutes"], ["ed_visits.arrival_ts", "ed_visits.discharge_ts"]],
+        "declared", {"declared": True, "parsed": None, "probed": None})
 
 
 @pytest.mark.parametrize("change, message", [
@@ -146,7 +185,10 @@ def test_should_load_example_spec():
     ({"required": [{"column": "t.a", "colour": "x"}]}, "unknown keys"),
     ({"joins": [["t.a"]]}, r"\[ref, ref\]"),
     ({"joins": [["t.a", "t.b"]]}, "two different tables"),
-    ({"any_of": [["t.a"]]}, "at least two"),
+    ({"any_of": [[["t.a"]]]}, "at least two"),
+    ({"any_of": [["t.a", "t.b"]]}, "non-empty list of refs"),
+    ({"targets": {"kk": 5}}, "unknown targets keys"),
+    ({"targets": {"t": 2}}, "between 0 and 1"),
     ({"subject_key": "bad ref"}, "not a 'table.column'"),
     ({"targets": {"k": 0}}, "positive integer"),
 ])

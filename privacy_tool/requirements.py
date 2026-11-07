@@ -10,9 +10,17 @@ Three sources, one output shape (see README "Module contracts"):
   "a+b", "a,b", "a/b" all needed (also inside an alternative: "a|b+c")
   "t.c", "t.a/b/c"    table-qualified (prefix applies to every column in a "/" list)
   "c (time of day)"   precision hint -> precision[c] = "hour"
-Unqualified names resolve to the task's table, else to a table the needs name, else to the only table that has them.
+Unqualified names resolve to the task's table, else to a table the needs name, else (not for alternatives) to the
+only table that has them. A name found in several candidate tables is left to probing with a warning.
 Tokens that are not columns of the resolved table (e.g. "vitals", "record keys") are ignored with a warning.
-An any_of group is a list of alternatives; an alternative that needs several columns is written "t.a+t.b".
+any_of is a list of groups; a group is a list of alternatives; an alternative is a list of refs that are all needed:
+  [[["t.los"], ["t.arrival", "t.discharge"]]]
+
+Probing drops one column at a time. A column is required when the task becomes not answerable or its score drops by
+more than `tolerance` (default 0.05). Plan section 5 says "if its score drops"; the tolerance deviates on purpose so
+that incidental dependencies (HEALTH-S1: dropping the duplicate-filter column `disposition` moves H-U2 to 0.998)
+do not count as purpose-bound. Blind spot: two columns that can stand in for each other but are not written as
+`a|b` each look unnecessary, because each drop alone is compensated by the other; only parsing catches those.
 """
 from __future__ import annotations
 
@@ -61,8 +69,8 @@ def _task_tables(task, tables):
     return [t for t in task.table.split("+") if t]
 
 
-def _resolve(name, prefix, home, named, tables, warnings, need):
-    """'table.column' for a column token, or None (with a warning) when it is not a column."""
+def _resolve(name, prefix, home, named, tables, warnings, need, global_fallback=True):
+    """'table.column' for a column token, or None (with a warning) when it is not a column or is ambiguous."""
     name = name.strip()
     if not name:
         return None
@@ -77,7 +85,7 @@ def _resolve(name, prefix, home, named, tables, warnings, need):
     hits = [t for t in home if t in tables and name in tables[t].columns]
     if not hits:  # e.g. H-U7 lives on lab_results but needs ed_visits.temp_c: try the other tables the task names
         hits = [t for t in named if t in tables and name in tables[t].columns]
-    if not hits:  # e.g. ENERGY-U1 reads customers.postcode without naming the table
+    if not hits and global_fallback:  # e.g. ENERGY-U1 reads customers.postcode without naming the table
         others = [t for t in tables if name in tables[t].columns]
         if len(others) == 1:
             warnings.append(f"{need!r}: '{name}' found only in {others[0]}; resolved there")
@@ -85,8 +93,8 @@ def _resolve(name, prefix, home, named, tables, warnings, need):
     if len(hits) == 1:
         return f"{hits[0]}.{name}"
     if len(hits) > 1:
-        warnings.append(f"{need!r}: '{name}' is ambiguous across {hits}; using {hits[0]}")
-        return f"{hits[0]}.{name}"
+        warnings.append(f"{need!r}: '{name}' is ambiguous across {hits}; left to probing")
+        return None
     warnings.append(f"{need!r}: '{name}' is not a column of {home + named}; informal token ignored")
     return None
 
@@ -100,8 +108,8 @@ def parse_needs(task, tables):
         m = re.search(r"\(([^)]*)\)", need)
         hint = m.group(1).strip().lower() if m else None
         need_body = re.sub(r"\([^)]*\)", "", need).strip()
-        alternatives = []
-        for alt in re.split(r"\||\s+or\s+", need_body):
+        alternatives, alts = [], re.split(r"\||\s+or\s+", need_body)
+        for alt in alts:
             refs = []
             for part in re.split(r"[+,]", alt):
                 prefix, part = None, part.strip()
@@ -109,7 +117,7 @@ def parse_needs(task, tables):
                     prefix, part = part.split(".", 1)
                     touched.add(prefix)
                 for name in part.split("/"):
-                    ref = _resolve(name, prefix, home, named, tables, warnings, need)
+                    ref = _resolve(name, prefix, home, named, tables, warnings, need, global_fallback=len(alts) == 1)
                     if ref and ref not in refs:
                         refs.append(ref)
                         touched.add(ref.split(".")[0])
@@ -123,7 +131,7 @@ def parse_needs(task, tables):
         if len(alternatives) == 1:
             required += [r for r in alternatives[0] if r not in required]
         elif len(alternatives) > 1:
-            any_of.append(["+".join(a) for a in alternatives])
+            any_of.append(alternatives)
     return {"required": required, "any_of": any_of, "precision": precision,
             "tables": sorted(t for t in touched if t in tables), "warnings": warnings}
 
@@ -173,13 +181,14 @@ def _joins(refs):
     return [sorted(v) for v in by_col.values() if len({x.split(".")[0] for x in v}) > 1]
 
 
-def _add_join(req, columns, task_id):
+def _add_join(req, columns, task_id, kind):
+    """kind 'same_name' (heuristic: select must confirm it with relations.discover) or 'declared' (spec)."""
     for j in req["joins"]:
-        if j["columns"] == columns:
+        if j["columns"] == columns and j["kind"] == kind:
             if task_id not in j["tasks"]:
                 j["tasks"].append(task_id)
             return
-    req["joins"].append({"columns": columns, "tasks": [task_id]})
+    req["joins"].append({"columns": columns, "tasks": [task_id], "kind": kind})
 
 
 def _merge_precision(req, ref, level):
@@ -203,14 +212,26 @@ def from_scenario(scenario_id, tables, root, probe=True, tolerance=0.05):
     for task in tasks:
         parsed = parse_needs(task, tables)
         req["warnings"] += parsed["warnings"]
-        alternatives = {r for g in parsed["any_of"] for alt in g for r in alt.split("+")}
-        evidence = {"parsed": {k: parsed[k] for k in ("required", "any_of", "precision")}, "probed": None}
+        alternatives = {r for g in parsed["any_of"] for alt in g for r in alt}
+        evidence = {"declared": False, "parsed": {k: parsed[k] for k in ("required", "any_of", "precision")},
+                    "probed": None}
         columns = list(parsed["required"])
         if probe:
             p = probe_task(task, tables, parsed["tables"], tolerance)
             req["warnings"] += p["warnings"]
             evidence["probed"] = {k: p[k] for k in ("baseline", "required", "affected")}
-            columns += [r for r in p["required"] if r not in columns and r not in alternatives]
+            for r in p["required"]:
+                if r in columns:
+                    continue
+                if r not in alternatives:
+                    columns.append(r)
+                elif p["affected"].get(r, 0) is None:  # the other alternatives cannot stand in for it
+                    columns.append(r)
+                    req["warnings"].append(f"{task.id}: {r} is listed as an alternative, but the task is not "
+                                           "answerable without it; marked required")
+            if p["baseline"] is not None:
+                req["warnings"] += [f"{task.id}: {r} is in the needs but dropping it has no measurable effect; "
+                                    "kept as parsed" for r in parsed["required"] if r not in p["affected"]]
         req["tasks"].append({"id": task.id, "table": task.table, "columns": columns, "any_of": parsed["any_of"],
                              "precision": parsed["precision"], "evidence": evidence})
         for ref in columns:
@@ -221,13 +242,14 @@ def from_scenario(scenario_id, tables, root, probe=True, tolerance=0.05):
         for ref, level in parsed["precision"].items():
             _merge_precision(req, ref, level)
         for cols in _joins(columns):
-            _add_join(req, cols, task.id)
+            _add_join(req, cols, task.id, "same_name")
     return req
 
 
 # ------------------------------------------------------------------ spec files
 _SPEC_KEYS = {"dataset", "trust_level", "targets", "required", "any_of", "joins", "subject_key"}
 _ITEM_KEYS = {"column", "precision", "task"}
+_TARGET_KEYS = {"k", "l", "t", "max_suppression"}
 
 
 def _ref(value, where):
@@ -256,9 +278,16 @@ def from_spec(path):
     targets = spec.get("targets", {})
     if not isinstance(targets, dict):
         raise ValueError(f"{path}: 'targets' must be an object")
+    bad = set(targets) - _TARGET_KEYS
+    if bad:
+        raise ValueError(f"{path}: unknown targets keys {sorted(bad)}; allowed: {sorted(_TARGET_KEYS)}")
     for k in ("k", "l"):
         if k in targets and (not isinstance(targets[k], int) or isinstance(targets[k], bool) or targets[k] < 1):
             raise ValueError(f"{path}: targets.{k} must be a positive integer")
+    for k in ("t", "max_suppression"):
+        v = targets.get(k, 0)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 1:
+            raise ValueError(f"{path}: targets.{k} must be a number between 0 and 1")
     req["targets"] = dict(targets)
     if not isinstance(spec["required"], list):
         raise ValueError(f"{path}: 'required' must be a list")
@@ -275,7 +304,7 @@ def from_spec(path):
         if not isinstance(task_id, str) or not task_id:
             raise ValueError(f"{where}.task must be a non-empty string")
         task = tasks.setdefault(task_id, {"id": task_id, "table": ref.split(".")[0], "columns": [], "any_of": [],
-                                          "precision": {}, "evidence": "declared in spec"})
+                                          "precision": {}, "evidence": {"declared": True, "parsed": None, "probed": None}})
         if ref not in task["columns"]:
             task["columns"].append(ref)
         if task_id not in req["required"].setdefault(ref, []):
@@ -288,14 +317,14 @@ def from_spec(path):
     req["tasks"] = list(tasks.values())
     any_of = spec.get("any_of", [])
     if not isinstance(any_of, list) or not all(isinstance(g, list) and len(g) >= 2 for g in any_of):
-        raise ValueError(f"{path}: 'any_of' must be a list of lists with at least two alternatives")
+        raise ValueError(f"{path}: 'any_of' must be a list of groups, each with at least two alternatives")
     for gi, g in enumerate(any_of):
         for alt in g:
-            if not isinstance(alt, str):
-                raise ValueError(f"{path}: any_of[{gi}]: {alt!r} is not a 'table.column' reference")
-            for r in alt.split("+"):
+            if not isinstance(alt, list) or not alt:
+                raise ValueError(f"{path}: any_of[{gi}]: alternative {alt!r} must be a non-empty list of refs")
+            for r in alt:
                 _ref(r, f"{path}: any_of[{gi}]")
-    req["any_of"] = [list(g) for g in any_of]
+    req["any_of"] = [[list(alt) for alt in g] for g in any_of]
     joins = spec.get("joins", [])
     if not isinstance(joins, list):
         raise ValueError(f"{path}: 'joins' must be a list of [ref, ref] pairs")
@@ -305,7 +334,7 @@ def from_spec(path):
         a, b = (_ref(r, f"{path}: joins[{ji}]") for r in j)
         if a.split(".")[0] == b.split(".")[0]:
             raise ValueError(f"{path}: joins[{ji}] must connect two different tables")
-        _add_join(req, sorted([a, b]), "spec")
+        _add_join(req, sorted([a, b]), "spec", "declared")
     if spec.get("subject_key") is not None:
         req["subject_key"] = _ref(spec["subject_key"], f"{path}: subject_key")
     return req
