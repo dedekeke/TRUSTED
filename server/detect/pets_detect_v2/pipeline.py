@@ -45,13 +45,18 @@ class Config:
 
 
 PATTERN_SUBTYPES = {"IBAN": "m_iban", "LICENSE_PLATE": "m_plate", "EMAIL": "m_email", "PHONE": "m_phone",
-                    "NATIONAL_ID": "m_hetu", "IP_ADDRESS": "m_ipv4", "MAC_ADDRESS": "m_mac", "PAYMENT_CARD": "m_pan"}
+                    "NATIONAL_ID": "m_hetu", "IP_ADDRESS": "m_ipv4", "MAC_ADDRESS": "m_mac", "PAYMENT_CARD": "m_pan",
+                    "GPS_COORDINATE": "m_coord"}
+# share of values that must match; coordinates are often stored with 3 decimals, so only some reach the 4-decimal
+# pattern (signin_logs.geo_lon: 28%), while 2-decimal money amounts never do (0%)
+PATTERN_MIN_SHARE = {"GPS_COORDINATE": .2}
 
 
 def guardrail(p: dict, role: str, subtype: str = "") -> str | None:
     """Reject LLM answers that contradict hard statistics. Returns a reason when rejected."""
     key = PATTERN_SUBTYPES.get(subtype)
-    if key and p.get(key, 0) < .3 and not (subtype == "PAYMENT_CARD" and p.get("m_pan_masked", 0) >= .3):
+    if key and p.get(key, 0) < PATTERN_MIN_SHARE.get(subtype, .3) and \
+            not (subtype == "PAYMENT_CARD" and p.get("m_pan_masked", 0) >= .3):
         return f"{subtype} needs matching values, only {p.get(key, 0):.0%} match the pattern"
     if role == "record_key" and p["unique_ratio"] < .9:
         return f"record_key needs unique values, column is only {p['unique_ratio']:.0%} unique"
