@@ -13,12 +13,13 @@ usage: python -m privacy_tool.detect --data <dir> [--out labels.csv] [--rows 200
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import re
 from pathlib import Path
 
 import pandas as pd
 
-from pets_eval.check import hetu_ok, iban_ok, ip_ok, luhn_ok
+from pets_eval.check import hetu_ok, iban_ok, luhn_ok
 from pets_eval.parse import to_datetime
 
 SAMPLE = 2000  # values tested per column
@@ -30,6 +31,8 @@ TECHNICAL = {"IP_ADDRESS", "MAC_ADDRESS", "HOSTNAME", "USER_AGENT", "DEVICE_ID",
 PERSON_QI = {"BIRTH_DATE", "AGE", "SEX"}  # quasi-identifiers wherever they appear
 CONTEXT_QI = {"POSTCODE", "MUNICIPALITY", "GPS_COORDINATE", "TIMESTAMP", "DATE", "LOCATION_NAME", "LANGUAGE",
               "STREET_ADDRESS", "OCCUPATION", "ORG_NAME"}  # quasi-identifiers only in tables about people
+PERSON_IDS = {"CUSTOMER_ID", "PATIENT_ID", "STUDENT_ID", "EMPLOYEE_ID", "ACCOUNT_ID", "CARD_ID"}
+PERSONAL_DEVICES = {"MAC_ADDRESS", "DEVICE_ID"}  # a phone or card in a log is a person's trace
 ENTITY_IDS = {"CUSTOMER_ID", "PATIENT_ID", "STUDENT_ID", "EMPLOYEE_ID", "ACCOUNT_ID", "CARD_ID", "DEVICE_ID",
               "METER_ID", "PROPERTY_ID"}
 
@@ -55,7 +58,7 @@ NAME_HINTS = [  # (regex on column name, subtype); weak evidence only
     (r"birth|dob|syntym", "BIRTH_DATE"), (r"(^|_)age($|_)|age_band", "AGE"), (r"(^|_)sex$|gender|sukupuoli", "SEX"),
     (r"postcode|zip|postal|postinumero", "POSTCODE"), (r"municipality|kunta|(^|_)city|town|home_city", "MUNICIPALITY"),
     (r"(^|_)lat|(^|_)lon|latitude|longitude", "GPS_COORDINATE"), (r"lang|kieli", "LANGUAGE"),
-    (r"address|street|osoite", "STREET_ADDRESS"), (r"(^|_)name$|first_?name|last_?name|surname|nimi", "PERSON_NAME"),
+    (r"address|street|osoite", "STREET_ADDRESS"), (r"(first|last|given|family|full|sur|patient|customer|person|holder|guardian|author|sender|recipient|contact|officer|owner)_?name$|surname|(^|_)nimi$", "PERSON_NAME"),
     (r"_ts$|timestamp|time$|_at$|datetime", "TIMESTAMP"), (r"date|pvm|(^|_)day$", "DATE"),
     (r"icd|diagnos", "DIAGNOSIS_CODE"), (r"occupation|job|title|ammatti|nimike", "OCCUPATION"),
     (r"patient", "PATIENT_ID"), (r"customer|client|asiakas", "CUSTOMER_ID"), (r"student|pupil", "STUDENT_ID"),
@@ -73,13 +76,11 @@ R = {
     "NATIONAL_ID": re.compile(r"^\d{6}[-+A-FU-Y]\d{3}[0-9A-Y]$"),
     "EMAIL": re.compile(r"^[\w.+-]+@[\w-]+(\.[\w-]+)+$"),
     "IBAN": re.compile(r"^[A-Z]{2}\d{2}[ A-Z0-9]{11,32}$"),
-    "PHONE": re.compile(r"^(\+\d{3}|00\d{3}|0)\d{6,11}$"),  # after stripping separators
+    "PHONE": re.compile(r"^(\+\d{3}|00[1-9]\d{2}|0[1-9])\d{5,10}$"),  # after stripping separators
     "MAC_ADDRESS": re.compile(r"^([0-9A-F]{2}[:-]){5}[0-9A-F]{2}$", re.I),
-    "IPV6": re.compile(r"^([0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}$", re.I),
     "URL": re.compile(r"^(https?://|www\.)\S+$", re.I),
     "USER_AGENT": re.compile(r"^(Mozilla/|curl/|python-requests|Wget/|okhttp)", re.I),
     "LICENSE_PLATE": re.compile(r"^[A-ZÅÄÖ]{2,3}-\d{1,3}$"),
-    "HOSTNAME": re.compile(r"^[a-z][a-z0-9-]*\d[a-z0-9-]*(\.[a-z0-9-]+)*$", re.I),
     "DIAGNOSIS_CODE": re.compile(r"^[A-TV-Z]\d{2}(\.\d{1,2})?$"),
     "POSTCODE": re.compile(r"^\d{5}$"),
     "HEX_HASH": re.compile(r"^[0-9a-f]{32,128}$", re.I),
@@ -91,27 +92,44 @@ R = {
     "AGE_BAND": re.compile(r"^\d{1,3}\s*[-–]\s*\d{1,3}$|^\d{1,3}\+$"),
     "DATE_SHAPE": re.compile(r"^\d{1,4}[-./]\d{1,2}([-./]\d{1,4})?([ T]|$)|^\d{4}-?W\d{1,2}$"),
     "MASKED_CARD": re.compile(r"^\d{4,6}[ -]?[*xX#]{2,4}([ -]?[*xX#]{4}){0,2}[ -]?[*xX#]{0,6}[ -]?\d{4}$"),
-    "NUMBER": re.compile(r"^[-+]?(\d{1,3}([  ]\d{3})+|\d+)([.,]\d+)?$"),
+    "NUMBER": re.compile(r"^[-+]?(\d{1,3}([ \u00a0]\d{3})+|\d+)([.,]\d+)?$"),
 }
 
 
 def safe_datetime(vals: pd.Series) -> pd.Series:
-    """pets_eval.parse.to_datetime, but values it cannot handle (e.g. '2022-23' school years) become NaT."""
+    """pets_eval.parse.to_datetime, tz-naive; values it cannot handle (e.g. '2022-23', mixed offsets) become NaT."""
+    def naive(ts):  # keep local wall-clock time; mixed offsets cannot share one tz-aware dtype
+        return ts.tz_localize(None) if getattr(ts, "tzinfo", None) is not None else ts
+
     try:
-        return to_datetime(vals)
-    except (ValueError, OverflowError):
-        def one(v):
-            try:
-                return to_datetime(pd.Series([v])).iloc[0]
-            except (ValueError, OverflowError):
-                return pd.NaT
-        return pd.to_datetime(vals.map(one))
+        out = to_datetime(vals)
+        if isinstance(out.dtype, pd.DatetimeTZDtype):
+            out = out.dt.tz_localize(None)
+        if pd.api.types.is_datetime64_any_dtype(out):
+            return out
+    except (ValueError, OverflowError, TypeError):
+        pass
+
+    def one(v):
+        try:
+            return naive(to_datetime(pd.Series([v])).iloc[0])
+        except (ValueError, OverflowError, TypeError):
+            return pd.NaT
+    return pd.to_datetime(vals.map(one), errors="coerce")
 
 
 def normalise_hetu(v: str) -> str:
     """Strip a 'HETU'/'SSN' prefix and restore a missing century sign so the checksum can be tested."""
     v = re.sub(r"^(hetu|ssn|htun?)[:\s]*", "", v.strip(), flags=re.I).upper()
     return v[:6] + "-" + v[6:] if re.fullmatch(r"\d{9}[0-9A-Y]", v) else v
+
+
+def _is_ip(v: str) -> bool:
+    try:
+        ipaddress.ip_address(v)
+        return True
+    except ValueError:
+        return False
 
 
 def _rate(vals: pd.Series, fn) -> float:
@@ -123,10 +141,14 @@ def _rx(name):
     return lambda v: bool(rx.match(v))
 
 
+def _nonblank(s: pd.Series) -> pd.Series:
+    raw = s.astype("string").str.strip()
+    return raw[raw.notna() & (raw != "") & ~raw.str.lower().isin(["nan", "none", "null", "n/a", "-"])]
+
+
 def profile(s: pd.Series) -> dict:
     """Value statistics for one column (no values are returned)."""
-    raw = s.astype("string").str.strip()
-    nonnull = raw[raw.notna() & (raw != "") & ~raw.str.lower().isin(["nan", "none", "null"])]
+    nonnull = _nonblank(s)
     vals = nonnull.head(SAMPLE)
     n = len(nonnull)
     p = {"rows": len(s), "null_rate": round(1 - n / len(s), 4) if len(s) else 1.0,
@@ -135,7 +157,7 @@ def profile(s: pd.Series) -> dict:
          "mean_words": round(float(vals.str.split().str.len().mean()), 2) if n else 0.0}
     if not n:
         return p
-    num = vals.str.replace(" ", " ").map(lambda v: bool(R["NUMBER"].match(v)))
+    num = vals.str.replace("\u00a0", " ").map(lambda v: bool(R["NUMBER"].match(v)))
     p["numeric_rate"] = round(float(num.mean()), 4)
     p["integer_rate"] = round(_rate(vals, lambda v: bool(re.fullmatch(r"[-+]?\d+", v))), 4)
     p["time_rate"] = round(_rate(vals, lambda v: bool(R["TIME"].search(v))), 4)
@@ -150,7 +172,7 @@ def profile(s: pd.Series) -> dict:
 def _value_subtype(vals: pd.Series, p: dict) -> tuple[str | None, float, str]:
     """Best subtype from values alone: (subtype, match rate, evidence)."""
     if not len(vals):
-        return None, 0.0, "empty"
+        return "CATEGORY", 0.3, "empty column"
     lower = vals.str.lower()
     compact = vals.str.replace(r"[\s()-]", "", regex=True)
     tests = [
@@ -160,14 +182,15 @@ def _value_subtype(vals: pd.Series, p: dict) -> tuple[str | None, float, str]:
         ("PAYMENT_CARD", lambda: _rate(compact, lambda v: v.isdigit() and len(v) in (13, 16, 19) and luhn_ok(v)), "Luhn 13/16/19 digits"),
         ("PAYMENT_CARD", lambda: _rate(vals, _rx("MASKED_CARD")), "masked card number"),
         ("DEVICE_ID", lambda: _rate(compact, lambda v: v.isdigit() and len(v) == 15 and luhn_ok(v)), "IMEI Luhn 15 digits"),
-        ("IP_ADDRESS", lambda: _rate(vals, lambda v: ip_ok(v) or bool(R["IPV6"].match(v) and ":" in v and v.count(":") >= 2)), "IP address"),
         ("MAC_ADDRESS", lambda: _rate(vals, _rx("MAC_ADDRESS")), "MAC pattern"),
+        ("IP_ADDRESS", lambda: _rate(vals, _is_ip), "IP address"),
         ("URL", lambda: _rate(vals, _rx("URL")), "URL pattern"),
         ("USER_AGENT", lambda: _rate(vals, _rx("USER_AGENT")), "user-agent prefix"),
         ("LICENSE_PLATE", lambda: _rate(vals, _rx("LICENSE_PLATE")), "plate pattern"),
         ("PHONE", lambda: _rate(vals[~vals.str.contains(r"[.,:/]")].str.replace(r"[\s()-]", "", regex=True), _rx("PHONE"))
             * (~vals.str.contains(r"[.,:/]")).mean(), "phone pattern"),
-        ("DIAGNOSIS_CODE", lambda: _rate(vals.str.upper(), _rx("DIAGNOSIS_CODE")), "ICD-10 pattern"),
+        ("DIAGNOSIS_CODE", lambda: _rate(vals.str.upper(), _rx("DIAGNOSIS_CODE"))
+            if p["distinct"] >= 5 and vals.str[:1].nunique() >= 3 else 0.0, "ICD-10 pattern"),
         ("TECH_HASH", lambda: _rate(vals, _rx("HEX_HASH")), "hex digest"),
         ("SEX", lambda: float(lower.isin(SEX_VALUES).mean()) if p["distinct"] <= 4 and not set(lower.unique()) <= {"1", "2", "0"} else 0.0, "sex vocabulary"),
         ("LANGUAGE", lambda: float(lower.isin(LANG_VALUES).mean()) if p["distinct"] <= 30 else 0.0, "language codes"),
@@ -194,7 +217,7 @@ def _value_subtype(vals: pd.Series, p: dict) -> tuple[str | None, float, str]:
     if _rate(vals, _rx("AGE_BAND")) >= .8:
         return "AGE", .8, "age-band notation"
     if p.get("numeric_rate", 0) >= .9:
-        num = pd.to_numeric(vals.str.replace(r"[\s ]", "", regex=True).str.replace(",", "."), errors="coerce")
+        num = pd.to_numeric(vals.str.replace(r"[\s\u00a0]", "", regex=True).str.replace(",", "."), errors="coerce")
         decimals = vals.str.extract(r"[.,](\d+)$")[0].str.len().fillna(0)
         if _rate(vals, _rx("MONEY")) >= .8:
             return "FINANCIAL_DATA", .6, "money format"
@@ -225,16 +248,16 @@ def _name_subtype(col: str) -> str | None:
 def classify_column(col: str, s: pd.Series, table: str = "") -> dict:
     """Subtype + confidence + evidence for one column (role is resolved per table)."""
     p = profile(s)
-    raw = s.astype("string").str.strip()
-    vals = raw[raw.notna() & (raw != "")].head(SAMPLE)
+    vals = _nonblank(s).head(SAMPLE)
     vsub, vconf, ev = _value_subtype(vals, p)
     nsub = _name_subtype(col)
-    sub, conf = vsub, vconf
+    sub, conf, own_key = vsub, vconf, False
     if vsub in ("RECORD_ID", "ENTITY_ID"):
         if nsub in ENTITY_IDS:
             sub, conf, ev = (nsub, .8, ev + f"; name suggests {nsub}")
-        if vsub == "RECORD_ID" and col.lower().split("_")[0] in table.lower():
-            sub, conf, ev = sub, .85, ev + "; key of its own table"
+        own_key = vsub == "RECORD_ID" and col.lower().split("_")[0] in {t.rstrip("s") for t in table.lower().split("_")}
+        if own_key:
+            conf, ev = .85, ev + "; key of its own table"
     elif nsub and nsub != vsub and vconf < .8:
         # weak value evidence: let a specific name hint win, but stay below auto-accept confidence
         generic = vsub in (None, "CATEGORY", "MEASUREMENT", "FREE_TEXT") or vconf < .5
@@ -247,22 +270,23 @@ def classify_column(col: str, s: pd.Series, table: str = "") -> dict:
         sub, ev = "OTHER", ev + " (hashed identifier)"
     if sub == "MEASUREMENT" and nsub == "AGE":
         sub = "AGE"
-    return {"column": col, "subtype": sub, "confidence": round(conf, 2), "evidence": ev, "profile": p}
+    return {"column": col, "subtype": sub, "confidence": round(conf, 2), "evidence": ev, "own_key": own_key,
+            "from_values": sub == vsub, "profile": p}
 
 
 def _role(c: dict, person_table: bool, health_table: bool) -> tuple[str, float]:
     sub, conf, col = c["subtype"], c["confidence"], c["column"].lower()
-    if sub in DIRECT or sub == "NATIONAL_ID":
+    if sub in DIRECT:
         return "direct_identifier", conf
     if sub == "STREET_ADDRESS":
         return ("direct_identifier" if person_table else "quasi_identifier"), conf
     if sub in TECHNICAL or sub == "OTHER":
         return "technical_identifier", conf
-    if sub == "RECORD_ID" or "key of its own table" in c["evidence"]:
+    if sub == "RECORD_ID" or c["own_key"]:
         return "record_key", conf
     if sub in ENTITY_IDS or sub == "ENTITY_ID":
         return "technical_identifier", conf
-    if sub in ("FREE_TEXT", "URL") and sub == "FREE_TEXT":
+    if sub == "FREE_TEXT":
         return "free_text", conf
     if sub == "DIAGNOSIS_CODE" or SENSITIVE_HINTS.search(col):
         return "sensitive_attribute", min(conf, .75)
@@ -281,8 +305,10 @@ def detect_table(df: pd.DataFrame, table: str, dataset: str = "") -> pd.DataFram
     """Labels for every column of one table, in taxonomy vocabulary plus confidence and evidence."""
     cols = [classify_column(c, df[c], table) for c in df.columns]
     subs = {c["subtype"] for c in cols}
-    person_table = bool(subs & (DIRECT | {"BIRTH_DATE", "SEX", "PATIENT_ID", "CUSTOMER_ID", "STUDENT_ID",
-                                           "EMPLOYEE_ID", "CARD_ID", "ACCOUNT_ID", "ENTITY_ID"}))
+    # a table is about people only on value evidence of personal identifiers or person attributes, or an
+    # identifier the column name ties to a person; name-only guesses and generic repeating ids don't count
+    person_table = any((c["from_values"] and c["confidence"] >= .8 and c["subtype"] in DIRECT | PERSON_QI | PERSONAL_DEVICES)
+                       or c["subtype"] in PERSON_IDS for c in cols)
     health_table = "DIAGNOSIS_CODE" in subs or bool(HEALTH_CONTEXT.search(" ".join([table, *df.columns]).lower()))
     rows = []
     for c in cols:
