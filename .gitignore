@@ -28,3 +28,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+
+out/
+.cache/
+rowmap_*.csv
+
+# Local selection inputs
+/server/select/examples/health_s1_confirmed.csv
+/server/select/examples/health_s1_spec.json

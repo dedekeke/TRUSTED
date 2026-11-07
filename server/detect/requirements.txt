@@ -1,0 +1,6 @@
+pandas>=2
+numpy
+scipy
+scikit-learn
+# scoring only: pip install -e ../../../toolkit   (the organisers' pets-eval)
+# optional LLM tier: Ollama on localhost with `ollama pull qwen2.5:7b`

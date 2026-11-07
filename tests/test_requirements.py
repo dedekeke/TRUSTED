@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from privacy_tool import requirements as rq
+from server.select import requirements as rq
 
 TABLES = {
     "visits": pd.DataFrame({"vid": ["v1", "v2"], "arrival": ["2025-01-01 10:00", "2025-01-02 11:00"],
@@ -150,9 +150,9 @@ def test_no_purpose_shape():
         "none", "public", {}, [], [rq.NO_PURPOSE_WARNING])
 
 
-def test_should_have_same_keys_for_all_sources(fake_scenario):
+def test_should_have_same_keys_for_all_sources(fake_scenario, tmp_path):
     keys = set(rq.from_scenario("X-S1", TABLES, "/nowhere", probe=False))
-    assert keys == set(rq.no_purpose()) == set(rq.from_spec(rq.Path(rq.__file__).parent / "examples/health_s1_spec.json"))
+    assert keys == set(rq.no_purpose()) == set(rq.from_spec(write(tmp_path, BASE)))
 
 
 def write(tmp_path, spec):
@@ -170,10 +170,11 @@ def test_should_load_valid_spec(tmp_path):
         {"t.a": ["q"]}, {"t.a": "hour"}, ["t.a", "u.a"], "t.a")
 
 
-def test_should_load_example_spec():
-    r = rq.from_spec(rq.Path(rq.__file__).parent / "examples/health_s1_spec.json")
+def test_should_load_declared_alternatives(tmp_path):
+    spec = {**BASE, 'any_of': [[['t.los'], ['t.a', 't.end']]], 'joins': [['t.id', 'u.id']]}
+    r = rq.from_spec(write(tmp_path, spec))
     assert (r["precision"], r["any_of"][0], r["joins"][0]["kind"], r["tasks"][0]["evidence"]) == (
-        {"ed_visits.arrival_ts": "hour"}, [["ed_visits.los_minutes"], ["ed_visits.arrival_ts", "ed_visits.discharge_ts"]],
+        {"t.a": "hour"}, [["t.los"], ["t.a", "t.end"]],
         "declared", {"declared": True, "parsed": None, "probed": None})
 
 

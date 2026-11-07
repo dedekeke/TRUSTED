@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from privacy_tool.transform import apply, apply_column, redact
+from server.select.transform import apply, apply_column, redact
 
 KEY = b"test-key-not-secret"
 
@@ -34,7 +34,7 @@ def tables():
 def plan():
     return {
         "release_id": "TEST-S1/recipient",
-        "status": "ready_for_transform",
+        "status": "measured_ok", "outcome": {"approved": True},
         "trust_level": "controlled_research", "targets": {"k": 5},
         "tables": {"visits": {"action": "RELEASE", "record_key": "vid"}, "labs": {"action": "RELEASE", "record_key": "lab"},
                    "notes": {"action": "WITHHOLD"}},
@@ -193,3 +193,37 @@ def test_hand_edited_plan_is_rechecked():
     t["visits"]["new_col"] = "x"
     with pytest.raises(ValueError, match="without a decision"):
         apply(t, plan(), KEY)
+
+
+@pytest.mark.parametrize('status,outcome', [('policy_valid', {}), ('target_unmet', {'approved': False}),
+                                            ('budget_exhausted', {'approved': False}),
+                                            ('measured_ok', {'approved': False})])
+def test_only_approved_measured_ok_exports_by_default(tmp_path, status, outcome):
+    unapproved = {**plan(), 'status': status, 'outcome': outcome}
+    with pytest.raises(ValueError, match='unapproved_plan'):
+        apply(tables(), unapproved, KEY, tmp_path / 'p', tmp_path / 'e')
+    assert not (tmp_path / 'p').exists()
+    _, stats = apply(tables(), unapproved, KEY, tmp_path / 'p', tmp_path / 'e', allow_unapproved=True)
+    assert stats['release_gate'] == {'status': status, 'approved': False, 'allow_unapproved': True, 'plan_sha256': None}
+    assert 'NOT AN APPROVED RELEASE' in (tmp_path / 'p' / 'NOT_APPROVED.txt').read_text()
+
+
+def test_blocked_plan_never_exports_even_with_override():
+    with pytest.raises(ValueError, match='fix its errors'):
+        apply(tables(), {**plan(), 'status': 'blocked'}, KEY, allow_unapproved=True)
+
+
+def test_transform_cli_checks_input_binding(tmp_path, monkeypatch, capsys):
+    import json
+    from server.select.__main__ import main
+    from server.select.artifacts import provenance
+    data = tmp_path / 'data'
+    data.mkdir()
+    for t, df in tables().items():
+        df.to_csv(data / f'{t}.csv', index=False)
+    p = {**plan(), 'provenance': provenance(data, None)}
+    (data / 'labs.csv').write_text((data / 'labs.csv').read_text().replace('120', '121'))
+    (tmp_path / 'plan.json').write_text(json.dumps(p))
+    monkeypatch.setenv('PRIVACY_TOOL_HMAC_KEY', 'test-key')
+    assert main(['transform', '--data', str(data), '--plan', str(tmp_path / 'plan.json'), '--out', str(tmp_path / 'o')]) == 2
+    assert '[input_mismatch]' in capsys.readouterr().err and not (tmp_path / 'o').exists()

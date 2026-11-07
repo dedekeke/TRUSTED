@@ -3,8 +3,8 @@ import itertools
 
 import pytest
 
-from privacy_tool import detect
-from privacy_tool.policy import TRUST_LEVELS, candidates, targets, violations
+from server.select import detect
+from server.select.policy import TRUST_LEVELS, candidates, targets, violations
 
 ROLES = ["direct_identifier", "technical_identifier", "record_key", "quasi_identifier", "sensitive_attribute",
          "free_text", "non_sensitive"]
@@ -72,7 +72,7 @@ def test_should_release_no_row_level_sensitive_or_free_text_at_public():
         if t == "public" and label["privacy_role"] in ("sensitive_attribute", "free_text") \
                 and label["subtype"] not in REROUTED:
             assert actions(c) == ["DROP"], (label, req, join)
-            assert req is False or c["escalate"]
+            assert req is False or c["escalate"] or c["unsupported"]
 
 
 def test_should_never_keep_low_confidence_columns():
@@ -108,17 +108,19 @@ def test_should_never_keep_text_diagnoses_or_addresses_labelled_non_sensitive_at
 
 def test_should_merge_rare_values_below_the_effective_k():
     lang = lab("quasi_identifier", "LANGUAGE")
-    merge = candidates(lang, "contractual", True, k=11)["rungs"][-1]
+    rungs = candidates(lang, "contractual", True, k=11)['rungs']
+    assert [r['params']['min_count'] for r in rungs[1:]] == [11, 220, 2200]
+    merge = rungs[1]
     assert merge["params"]["min_count"] == 11
     assert violations(lang, merge, "contractual", k=11) == [] and violations(lang, merge, "contractual")
-    assert candidates(lang, "public", True)["rungs"][-1]["params"]["min_count"] == targets("public")["k"]
+    assert candidates(lang, "public", True)["rungs"][1]["params"]["min_count"] == targets("public")["k"]
     with pytest.raises(ValueError):
         candidates(lang, "public", True, k=0)
 
 
 def test_should_order_time_ladders_finest_to_coarsest():
     assert methods(candidates(lab("quasi_identifier", "TIMESTAMP"), "contractual", True)) == \
-        ["floor_hour", "date", "iso_week", "month"]
+        ["floor_hour", "week_hour", "month_hour", "year_hour", "date", "iso_week", "month"]
     assert methods(candidates(lab("quasi_identifier", "DATE"), "contractual", True)) == ["date", "iso_week", "month", "year"]
 
 
@@ -164,7 +166,7 @@ def test_should_offer_only_coarsest_rung_and_drop_for_low_confidence_required():
 
 def test_should_trim_rungs_coarser_than_precision_and_drop():
     assert methods(candidates(lab("quasi_identifier", "TIMESTAMP"), "contractual", True, precision="date")) == \
-        ["floor_hour", "date"]
+        ["floor_hour", "week_hour", "month_hour", "year_hour", "date"]
     assert methods(candidates(lab("quasi_identifier", "AGE"), "public", True, precision=10)) == ["age_band", "age_band"]
     assert actions(candidates(lab("non_sensitive", "CATEGORY"), "internal", False, precision="exact")) == ["KEEP"]
 
