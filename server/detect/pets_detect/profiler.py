@@ -195,9 +195,10 @@ def link_columns(profiles: list[dict], tables: dict[str, pd.DataFrame]) -> None:
                         q["is_key_target"] = True
 
 
-def profile_dataset(dataset: str, folder: Path, seed: int = 0) -> list[dict]:
+def profile_dataset(dataset: str, folder: Path, seed: int = 0, tables: dict | None = None) -> list[dict]:
+    """tables: already loaded as load_dataset() would (default: read folder)."""
     rng = np.random.default_rng(seed)
-    tables = load_dataset(folder)
+    tables = load_dataset(folder) if tables is None else tables
     profiles = []
     for t, df in tables.items():
         for i, c in enumerate(df.columns):
