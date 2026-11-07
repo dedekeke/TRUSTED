@@ -2,12 +2,12 @@
 
 Rules are keyed on privacy_role × subtype × trust level, never on column or dataset names. For each column,
 `candidates()` returns the allowed rungs finest → coarsest; the search (PET-7) picks one, the transformer
-(PET-6) applies it. `violations()` re-checks the hard constraints on any rung, including hand-edited plans.
-Pure functions, no I/O.
+(PET-6) applies it. `violations()` accepts only DROP or a rung the matrix itself offers, so hand-edited plans
+cannot bypass it. Pure functions, no I/O.
 """
 from __future__ import annotations
 
-from .detect import REVIEW_BELOW
+from .detect import DIRECT, ENTITY_IDS, REVIEW_BELOW, TECHNICAL
 
 TRUST_LEVELS = ["internal", "contractual", "controlled_research", "public"]
 ACTIONS = {"KEEP", "DROP", "HMAC", "GENERALISE", "REDACT", "DERIVE", "WITHHOLD"}  # WITHHOLD is table-level
@@ -15,8 +15,9 @@ ACTIONS = {"KEEP", "DROP", "HMAC", "GENERALISE", "REDACT", "DERIVE", "WITHHOLD"}
 # Operations the transformer must implement; each rung uses exactly one. Params:
 METHODS = {
     "hmac_sha256",      # {domain}: HMAC context shared by join partners; None here, the selector sets it
-    "ipv4_prefix",      # {}: prefix-preserving IPv4 pseudonymisation (baselines/_common.py)
-    "derive_age_band",  # {width, top}: age at the row's event date from DOB, banded; top = open-ended top band start
+    "ipv4_prefix",      # {}: truncate an IPv4 address to its /24 (a.b.c.0); generalisation, not pseudonymisation
+    "derive_age_band",  # {width, top}: age at the row's event date from DOB, banded; top = start of the open top band.
+                        #   Only used through plan["derived"]: the selector turns the DERIVE rung into a derived column
     "age_band",         # {width, top}: band an age value
     "floor_hour",       # {}: YYYY-MM-DD HH:00, floored never rounded
     "date",             # {}: YYYY-MM-DD
@@ -24,23 +25,28 @@ METHODS = {
     "month",            # {}: YYYY-MM
     "year",             # {}: YYYY
     "postcode_prefix",  # {digits}: keep the first n digits
-    "suppress_rare",    # {min_count}: blank values seen < min_count times (local suppression, used by the search)
+    "suppress_rare",    # {min_count}: blank values seen < min_count times (search's local suppression, not a rung)
     "merge_rare",       # {min_count}: values seen < min_count times become "other"
     "round_decimals",   # {digits}: round coordinates to n decimals
     "round_numeric",    # {step}: round to the nearest multiple of step
-    "top_bottom_code",  # {lower_q, upper_q}: clamp values outside these quantiles
+    "top_bottom_code",  # {lower_q, upper_q}: clamp values outside these quantiles (transformer supports it; no rung yet)
     "icd_3char",        # {}: ICD-10 category, e.g. J18.9 -> J18
-    "diagnosis_group",  # {mapping}: toolkit diagnosis groups; unmapped codes become blank, never raw
+    "diagnosis_group",  # {mapping}: must be "pets_eval.utility.health.diagnosis_group"; unmapped codes become blank
     "icd_chapter",      # {}: first letter of the ICD-10 code
     "redact_spans",     # {profile}: replace detected PII spans with typed placeholders
 }
 NEEDS_METHOD = {"HMAC", "GENERALISE", "DERIVE", "REDACT"}
 
 PUBLIC_ESCALATION = "row-level release not suitable: needs aggregate/DP path"
+IDS = {"direct_identifier", "technical_identifier", "record_key"}
 TIME_SUBTYPES = {"TIMESTAMP", "DATE", "BIRTH_DATE"}
 CATEGORICAL_QI = {"MUNICIPALITY", "LOCATION_NAME", "ORG_NAME", "OCCUPATION", "LANGUAGE", "SEX", "CATEGORY",
                   "NATIONALITY"}
 NUMERIC = {"MEASUREMENT", "FINANCIAL_DATA", "DURATION"}
+# Identifier subtypes are handled as identifiers whatever role a label gives them (a raw email is never KEEP).
+ID_SUBTYPE_ROLE = {**{s: "direct_identifier" for s in DIRECT | {"NATIONAL_ID"}},
+                   **{s: "technical_identifier" for s in TECHNICAL | ENTITY_IDS | {"IMEI"}},
+                   "RECORD_ID": "record_key"}
 AGE_TOP = 80  # canonical bands 0-9 … 80+ (plan §9)
 
 
@@ -64,17 +70,17 @@ _GPS = [(str(d), _r("GENERALISE", "round_decimals", digits=d)) for d in (3, 2, 1
 _DIAGNOSIS = [("exact", KEEP), ("3char", _r("GENERALISE", "icd_3char")),
               ("group", _r("GENERALISE", "diagnosis_group", mapping="pets_eval.utility.health.diagnosis_group")),
               ("chapter", _r("GENERALISE", "icd_chapter"))]
-# proposal: step 1 and 1st/99th percentiles until a spec gives the analysis's minimum precision
-_NUMERIC = [("exact", KEEP), ("rounded", _r("GENERALISE", "round_numeric", step=1)),
-            ("coded", _r("GENERALISE", "top_bottom_code", lower_q=0.01, upper_q=0.99))]
+# shortcut: fixed absolute steps ignore the column's scale; switch to spec-given minimum precision when specs exist
+_NUMERIC = [("exact", KEEP)] + [(str(s), _r("GENERALISE", "round_numeric", step=s)) for s in (1, 10, 100)]
 
 
 def _categorical(k: int) -> list:
     return [("exact", KEEP), ("merged", _r("GENERALISE", "merge_rare", min_count=k))]
 
 
-QI_LADDERS = {"AGE": _AGE, "BIRTH_DATE": _DOB, "TIMESTAMP": _TIMESTAMP, "DATE": _DATE, "POSTCODE": _POSTCODE,
-              "GPS_COORDINATE": _GPS, **{s: _NUMERIC for s in NUMERIC}}
+# Ladders keyed on subtype; also used when a sensitive attribute has one of these subtypes.
+SUBTYPE_LADDERS = {"AGE": _AGE, "BIRTH_DATE": _DOB, "TIMESTAMP": _TIMESTAMP, "DATE": _DATE, "POSTCODE": _POSTCODE,
+                   "GPS_COORDINATE": _GPS, **{s: _NUMERIC for s in NUMERIC}}
 
 # Default risk targets per trust level. Proposals (plan §6), to confirm; a scenario's own target overrides them.
 DEFAULT_TARGETS = {
@@ -92,19 +98,28 @@ def _check_trust(trust_level: str) -> None:
 
 
 def targets(trust_level: str, scenario_targets: dict | None = None) -> dict:
-    """Risk target for a trust level; scenario_targets overrides individual keys."""
+    """Risk target for a trust level; scenario_targets overrides individual keys. Loosening is noted, never silent."""
     _check_trust(trust_level)
-    return {**DEFAULT_TARGETS[trust_level], "max_suppression": MAX_SUPPRESSION, **(scenario_targets or {})}
+    base = {**DEFAULT_TARGETS[trust_level], "max_suppression": MAX_SUPPRESSION}
+    over = scenario_targets or {}
+    notes = []
+    for key, new in over.items():
+        old = base.get(key)
+        looser = (key in ("k", "l") and (old is None or new < old)) or \
+                 (key == "max_suppression" and new > old) or (key == "free_text" and old is False and new)
+        if looser:
+            notes.append(f"scenario loosens {key}: {old} -> {new} (trust-level default for {trust_level})")
+    return {**base, **over, "notes": notes}
 
 
 def _ladder(role: str, sub: str, trust_level: str, required: bool, in_join: bool, notes: list) -> tuple:
     """(tagged ladder, escalate). Ladders here never include DROP; DROP is appended by the caller."""
     k = DEFAULT_TARGETS[trust_level]["k"]
-    if role in ("direct_identifier", "technical_identifier", "record_key"):
+    if role in IDS:
         if not (required or in_join):
             return [], None
         if role == "technical_identifier" and sub == "IP_ADDRESS" and not in_join:
-            return [(None, _r("HMAC", "ipv4_prefix")), (None, HMAC)], None
+            return [(None, _r("GENERALISE", "ipv4_prefix")), (None, HMAC)], None
         return [(None, HMAC)], None
     if role == "quasi_identifier":
         if not required:
@@ -112,8 +127,8 @@ def _ladder(role: str, sub: str, trust_level: str, required: bool, in_join: bool
         if sub == "STREET_ADDRESS":
             notes.append("street address has no safe row-level form; dropped although required, review")
             return [], None
-        if sub in QI_LADDERS:
-            return QI_LADDERS[sub], None
+        if sub in SUBTYPE_LADDERS:
+            return SUBTYPE_LADDERS[sub], None
         if sub in CATEGORICAL_QI:
             return _categorical(k), None
         notes.append(f"no ladder for quasi-identifier subtype {sub}; dropped, review")
@@ -121,12 +136,16 @@ def _ladder(role: str, sub: str, trust_level: str, required: bool, in_join: bool
     if role == "sensitive_attribute":
         if not required:
             return [], None
-        esc = PUBLIC_ESCALATION if trust_level == "public" else None
+        if trust_level == "public":
+            return [], PUBLIC_ESCALATION
         if sub == "DIAGNOSIS_CODE":
-            return (_DIAGNOSIS if trust_level == "internal" else _DIAGNOSIS[1:]), esc
-        if sub in NUMERIC:
-            return _NUMERIC, esc
-        return _categorical(k), esc
+            return (_DIAGNOSIS if trust_level == "internal" else _DIAGNOSIS[1:]), None
+        if sub == "STREET_ADDRESS":
+            notes.append("street address has no safe row-level form; dropped although required, review")
+            return [], None
+        if sub in SUBTYPE_LADDERS:
+            return SUBTYPE_LADDERS[sub], None
+        return _categorical(k), None
     if role == "free_text":
         if not required:
             return [], None
@@ -143,13 +162,17 @@ def candidates(label: dict, trust_level: str, required: bool, in_join: bool = Fa
     """Allowed rungs for one column, finest → coarsest, plus review/escalation flags."""
     _check_trust(trust_level)
     role, sub = label["privacy_role"], label.get("subtype")
-    needs_review = float(label.get("confidence", 0.0)) < REVIEW_BELOW
     notes = []
+    if sub in ID_SUBTYPE_ROLE and role not in IDS:
+        notes.append(f"{sub} labelled {role}: handled as {ID_SUBTYPE_ROLE[sub]}, review")
+        role = ID_SUBTYPE_ROLE[sub]
+    if sub == "BIRTH_DATE" and role not in ("quasi_identifier", "sensitive_attribute"):  # derive-only in any role
+        notes.append(f"BIRTH_DATE labelled {role}: handled as quasi_identifier, review")
+        role = "quasi_identifier"
+    low_conf = float(label.get("confidence", 0.0)) < REVIEW_BELOW
     ladder, escalate = _ladder(role, sub, trust_level, required, in_join, notes)
-    needs_review = needs_review or bool(notes)
-    if needs_review and not required and not in_join:
-        notes.append("low-confidence label, not required: dropped (deny by default)")
-        ladder = []
+    needs_review = low_conf or bool(notes)
+    needed = required or in_join
     if precision is not None and ladder:
         tags = [t for t, _ in ladder]
         if all(t is None for t in tags):
@@ -159,11 +182,22 @@ def candidates(label: dict, trust_level: str, required: bool, in_join: bool = Fa
         else:
             ladder = ladder[: tags.index(str(precision)) + 1]
     rungs = [r for _, r in ladder]
-    # DROP closes the ladder unless the column is needed (required, joined, or a precision was asked for)
-    if not rungs or not (required or in_join or precision is not None):
+    if low_conf:
+        # deny by default: unconfirmed labels get only the coarsest protective rung, never KEEP
+        rungs = [r for r in rungs[-1:] if r["action"] != "KEEP"] if needed else []
+        notes.append("low-confidence label: " + ("coarsest rung or DROP only" if needed else "dropped (deny by default)"))
+    # DROP closes the ladder unless the column is needed and confirmed (precision asked for = needed)
+    if not rungs or low_conf or not (needed or precision is not None):
         rungs.append(DROP)
     rungs = [{**r, "params": dict(r["params"]), "level": i} for i, r in enumerate(rungs)]
     return {"rungs": rungs, "needs_review": needs_review, "escalate": escalate, "notes": notes}
+
+
+def _matches(rung: dict, allowed: dict) -> bool:
+    """Same action, method and params; an allowed param of None (HMAC domain) accepts any set value."""
+    p, q = rung.get("params") or {}, allowed["params"]
+    return (rung.get("action"), rung.get("method")) == (allowed["action"], allowed["method"]) and p.keys() == q.keys() \
+        and all((p[key] is not None) if v is None else p[key] == v for key, v in q.items())
 
 
 def violations(label: dict, rung: dict, trust_level: str) -> list[str]:
@@ -180,12 +214,20 @@ def violations(label: dict, rung: dict, trust_level: str) -> list[str]:
         out.append(f"{action} needs a method")
     if action in ("KEEP", "DROP", "WITHHOLD") and method is not None:
         out.append(f"{action} takes no method")
-    if action == "KEEP" and role in ("direct_identifier", "technical_identifier", "record_key"):
-        out.append(f"{role} must never be kept raw")
+    if action == "KEEP" and (role in IDS or sub in ID_SUBTYPE_ROLE):
+        out.append(f"{role}/{sub} must never be kept raw")
     if sub == "BIRTH_DATE" and (action == "KEEP" or method in ("date", "floor_hour")):
         out.append("exact birth date must never be released")
     if sub in TIME_SUBTYPES and method in ("round_numeric", "round_decimals"):
         out.append("time must be floored, never rounded")
     if role == "free_text" and trust_level == "public" and action in ("KEEP", "REDACT"):
         out.append("free text must not be released at public trust")
+    if out or (action == "DROP" and method is None):
+        return out
+    try:
+        allowed = [r for join in (True, False) for r in candidates(label, trust_level, True, join)["rungs"]]
+    except (KeyError, ValueError) as e:
+        return [f"label not covered by the rule matrix: {e}"]
+    if not any(_matches(rung, a) for a in allowed):
+        out.append(f"{action}/{method} {rung.get('params')} is not an allowed rung for {role}/{sub} at {trust_level}")
     return out
