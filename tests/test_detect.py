@@ -91,3 +91,16 @@ def test_repeating_station_id_does_not_make_people():
     readings = pd.DataFrame({"station_id": [f"ST{i % 5}" for i in range(50)], "city": ["Turku", "Salo"] * 25,
                              "count": [str(i) for i in range(50)]})
     assert label(readings, "city").privacy_role == "non_sensitive"
+
+
+def test_weak_but_value_detected_identifier_still_marks_people():
+    n = 60
+    trips = pd.DataFrame({
+        "user_account": [f"user{i % 20}@mail.example" if i % 3 else f"user{i % 20}" for i in range(n)],  # ~67% emails
+        "start_ts": [f"2025-05-{1 + i % 28:02d} {i % 24:02d}:{i % 60:02d}" for i in range(n)],
+        "start_lat": [f"60.{4500 + i:05d}" for i in range(n)],
+    })
+    labels = detect_table(trips, "trips").set_index("column")
+    assert labels.loc["user_account", "privacy_role"] == "direct_identifier"
+    assert labels.loc["start_ts", "privacy_role"] == "quasi_identifier"
+    assert labels.loc["start_lat", "privacy_role"] == "quasi_identifier"

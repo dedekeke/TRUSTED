@@ -255,7 +255,7 @@ def classify_column(col: str, s: pd.Series, table: str = "") -> dict:
     if vsub in ("RECORD_ID", "ENTITY_ID"):
         if nsub in ENTITY_IDS:
             sub, conf, ev = (nsub, .8, ev + f"; name suggests {nsub}")
-        own_key = vsub == "RECORD_ID" and col.lower().split("_")[0] in {t.rstrip("s") for t in table.lower().split("_")}
+        own_key = vsub == "RECORD_ID" and col.lower().split("_")[0] in {t.removesuffix("s") for t in table.lower().split("_")}
         if own_key:
             conf, ev = .85, ev + "; key of its own table"
     elif nsub and nsub != vsub and vconf < .8:
@@ -307,8 +307,9 @@ def detect_table(df: pd.DataFrame, table: str, dataset: str = "") -> pd.DataFram
     subs = {c["subtype"] for c in cols}
     # a table is about people only on value evidence of personal identifiers or person attributes, or an
     # identifier the column name ties to a person; name-only guesses and generic repeating ids don't count
-    person_table = any((c["from_values"] and c["confidence"] >= .8 and c["subtype"] in DIRECT | PERSON_QI | PERSONAL_DEVICES)
-                       or c["subtype"] in PERSON_IDS for c in cols)
+    person_table = any((c["from_values"] and c["confidence"] >= REVIEW_BELOW and c["subtype"] in DIRECT)
+                       or (c["from_values"] and c["confidence"] >= .8 and c["subtype"] in PERSON_QI | PERSONAL_DEVICES)
+                       or (c["subtype"] in PERSON_IDS and c["confidence"] >= REVIEW_BELOW) for c in cols)
     health_table = "DIAGNOSIS_CODE" in subs or bool(HEALTH_CONTEXT.search(" ".join([table, *df.columns]).lower()))
     rows = []
     for c in cols:
