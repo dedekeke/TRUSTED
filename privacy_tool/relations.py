@@ -22,6 +22,7 @@ KEY_ROLES = {"record_key", "technical_identifier", "direct_identifier"}
 NOT_ID_SUBTYPES = {"DATE", "TIMESTAMP", "BIRTH_DATE", "MEASUREMENT", "FINANCIAL_DATA", "GPS_COORDINATE", "AGE",
                    "PERSON_NAME", "STREET_ADDRESS", "FREE_TEXT"}  # EMAIL stays: UPNs are real join keys
 PERSON_IDS = {"CUSTOMER_ID", "PATIENT_ID", "STUDENT_ID", "EMPLOYEE_ID", "CARD_ID", "ACCOUNT_ID"}
+ACCOUNT_NAMES = {"EMAIL", "USERNAME"}  # lowest subject tier
 STAFF_IDS = {"EMPLOYEE_ID"}  # a person, but not the data subject when a joined subject exists
 ID_LIKE = re.compile(r"^(?=.*\d)\S{3,40}$")
 DECIMAL = re.compile(r"^[-+]?\d+[.,]\d+$")
@@ -108,10 +109,12 @@ def _subjects(tables, prof, ref_label, joins) -> dict[str, list[str]]:
             ref = f"{t}.{c}"
             role, sub = ref_label[ref] or (None, None)
             tier = 0 if role == "direct_identifier" and sub == "NATIONAL_ID" else \
-                1 if role == "technical_identifier" and sub in PERSON_IDS else None
+                1 if role == "technical_identifier" and sub in PERSON_IDS else \
+                2 if role == "direct_identifier" and sub in ACCOUNT_NAMES else None
             p = prof[ref]
-            if tier is not None and p["distinct"] >= MIN_CHILD_DISTINCT and p["id_values"] and not p["spaces"] \
-                    and _repeats(p):
+            # account names (UPNs, logins) often have no digits: for them, no spaces is enough
+            if tier is not None and p["distinct"] >= MIN_CHILD_DISTINCT and (p["id_values"] or tier == 2) \
+                    and not p["spaces"] and _repeats(p):
                 ranked.append((sub in STAFF_IDS, tier, i, ref))
         if ranked:
             best = min(ranked)

@@ -193,3 +193,12 @@ def test_should_flag_declared_subject_key_problems():
 def test_should_notice_missing_labels():
     r = discover(tables())
     assert (r["subject_keys"], r["notices"]) == ({}, [NO_LABELS])
+
+
+def test_should_take_account_name_as_lowest_subject_tier():
+    upns = [f"{n}.{m}@corp.example" for n in "abcde" for m in ["anna", "ville", "liisa", "matti", "eero"]]
+    logs = pd.DataFrame({"upn": [upns[i % 25] for i in range(100)],
+                         "cust": [f"C{i % 30:03d}" for i in range(100)]})
+    lab = labels([("logs", "upn", "direct_identifier", "EMAIL"), ("logs", "cust", "technical_identifier", "CUSTOMER_ID")])
+    assert discover({"logs": logs}, lab)["subject_keys"] == {"logs": "logs.cust"}
+    assert discover({"logs": logs[["upn"]]}, lab)["subject_keys"] == {"logs": "logs.upn"}
