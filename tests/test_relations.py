@@ -1,7 +1,8 @@
 """Key and join discovery on small artificial tables (no real rows)."""
 import pandas as pd
 
-from privacy_tool.relations import discover
+from privacy_tool import relations
+from privacy_tool.relations import NO_LABELS, discover
 
 
 def tables(n_parent=100, n_child=300, shift=0):
@@ -91,7 +92,113 @@ def test_should_use_declared_subject_key():
     assert (r["subject_key"], r["subject_keys"], r["conflicts"]) == ("b.y", {"b": "b.y"}, [])
 
 
-def test_should_be_deterministic_regardless_of_table_order():
+def test_should_be_deterministic_regardless_of_table_and_row_order():
     t = tables()
-    reordered = {"b": t["b"].iloc[::-1].reset_index(drop=True), "a": t["a"]}
-    assert discover(t) == discover(t) and pairs(discover(reordered)) == pairs(discover(t))
+    reordered = {"b": t["b"].iloc[::-1].reset_index(drop=True), "a": t["a"].iloc[::-1].reset_index(drop=True)}
+    assert discover(t) == discover(reordered)
+
+
+def test_should_join_and_report_orphan_outside_parent_length_range():
+    parent = [f"U{i:04d}" for i in range(500)]
+    t = {"a": pd.DataFrame({"k": parent}), "b": pd.DataFrame({"r": parent * 2 + ["U99999"]})}
+    assert [(j["parent"], j["child"], j["orphans"]) for j in discover(t)["joins"]] == [("a.k", "b.r", 1)]
+
+
+def _measured(monkeypatch, t):
+    calls = []
+    real = relations._measure_join
+    monkeypatch.setattr(relations, "_measure_join", lambda p, c: calls.append(1) or real(p, c))
+    discover(t)
+    return calls
+
+
+def test_format_filter_alone_should_reject_other_shape(monkeypatch):
+    t = tables()
+    t["b"]["y"] = t["b"]["y"].str.replace("V", "V-")  # V-00001 vs V00001: shape differs
+    assert _measured(monkeypatch, {"a": t["a"][["x"]], "b": t["b"][["y"]]}) == []
+
+
+def test_format_filter_alone_should_reject_other_length(monkeypatch):
+    t = {"a": pd.DataFrame({"k": [f"V{i:05d}" for i in range(100)]}),
+         "b": pd.DataFrame({"r": [f"V{i:08d}" for i in range(100)]})}  # same shape, longer
+    assert _measured(monkeypatch, t) == []
+
+
+def test_should_not_join_integer_measure_to_dense_integer_key():
+    t = {"a": pd.DataFrame({"id": [str(i) for i in range(1, 5001)]}),  # a row counter 1..N
+         "b": pd.DataFrame({"duration_s": [str(1000 + i % 300) for i in range(400)]})}
+    assert ("a.id" in [k["column"] for k in discover(t)["keys"]], discover(t)["joins"]) == (True, [])
+
+
+def test_should_keep_declared_join_on_dense_integer_key():
+    t = {"a": pd.DataFrame({"id": [str(i) for i in range(1, 501)]}),
+         "b": pd.DataFrame({"a_id": [str(1 + i % 500) for i in range(800)]})}
+    r = discover(t, declared={"joins": [["a.id", "b.a_id"]]})
+    assert [(j["coverage"], j["declared"]) for j in r["joins"]] == [(1.0, True)]
+
+
+def test_should_not_join_child_labelled_as_measure():
+    t = {"a": pd.DataFrame({"id": [str(1000 + 7 * i) for i in range(500)]}),  # sparse integer key
+         "b": pd.DataFrame({"n": [str(1000 + 7 * (i % 40)) for i in range(400)]})}
+    lab = labels([("a", "id", "record_key", "RECORD_ID"), ("b", "n", "quasi_identifier", "OTHER")])
+    assert (discover(t)["joins"] != [], discover(t, lab)["joins"]) == (True, [])
+
+
+def test_should_not_take_names_or_spaced_values_as_keys():
+    t = {"a": pd.DataFrame({"name": [f"Anna Person{i}" for i in range(50)],
+                            "nick": [f"user{i}" for i in range(50)]})}
+    lab = labels([("a", "name", "direct_identifier", "PERSON_NAME"), ("a", "nick", "direct_identifier", "PERSON_NAME")])
+    assert (discover(t)["keys"][0]["column"], discover(t, lab)["keys"]) == ("a.nick", [])
+
+
+def test_should_not_take_low_cardinality_labelled_column_as_subject():
+    t = {"logs": pd.DataFrame({"app": [f"App{i % 3}" for i in range(100)]})}
+    lab = labels([("logs", "app", "technical_identifier", "CUSTOMER_ID")])
+    assert discover(t, lab)["subject_keys"] == {}
+
+
+def visits_and_notes():
+    visits = pd.DataFrame({"v": [f"V{i:05d}" for i in range(100)],
+                           "p": [f"0101{50 + i % 40:02d}-9{i % 40:02d}A" for i in range(100)]})
+    notes = pd.DataFrame({"n": [f"N{i:05d}" for i in range(300)], "v": [f"V{i % 100:05d}" for i in range(300)],
+                          "staff": [f"S{i % 25:03d}" for i in range(300)]})
+    lab = labels([("visits", "v", "record_key", "RECORD_ID"), ("visits", "p", "direct_identifier", "NATIONAL_ID"),
+                  ("notes", "n", "record_key", "RECORD_ID"), ("notes", "v", "technical_identifier", "OTHER"),
+                  ("notes", "staff", "technical_identifier", "EMPLOYEE_ID")])
+    return {"visits": visits, "notes": notes}, lab
+
+
+def test_should_inherit_subject_through_join_over_local_staff_id():
+    t, lab = visits_and_notes()
+    r = discover(t, lab)
+    assert r["subject_paths"]["notes"] == ["notes.v", "visits.v", "visits.p"]
+    assert (r["subject_keys"]["notes"], r["subject_key"]) == ("visits.p", "visits.p")
+
+
+def test_should_fall_back_to_local_staff_id_without_reachable_subject():
+    t, lab = visits_and_notes()
+    assert discover({"notes": t["notes"]}, lab)["subject_paths"] == {"notes": ["notes.staff"]}
+
+
+def test_should_flag_declared_subject_key_problems():
+    t, lab = visits_and_notes()
+    conflicts = lambda want: discover(t, lab, {"subject_key": want})["conflicts"]
+    assert conflicts("visits.p") == []
+    assert conflicts("visits.nope") == ["declared subject key visits.nope contradicts discovered visits.p",
+                                        "declared subject key visits.nope: column not found"]
+    assert "declared subject key visits.v: values do not repeat across rows" in conflicts("visits.v")
+    assert conflicts("notes.staff") == ["declared subject key notes.staff contradicts discovered visits.p"]
+
+
+def test_should_notice_missing_labels():
+    r = discover(tables())
+    assert (r["subject_keys"], r["notices"]) == ({}, [NO_LABELS])
+
+
+def test_should_take_account_name_as_lowest_subject_tier():
+    upns = [f"{n}.{m}@corp.example" for n in "abcde" for m in ["anna", "ville", "liisa", "matti", "eero"]]
+    logs = pd.DataFrame({"upn": [upns[i % 25] for i in range(100)],
+                         "cust": [f"C{i % 30:03d}" for i in range(100)]})
+    lab = labels([("logs", "upn", "direct_identifier", "EMAIL"), ("logs", "cust", "technical_identifier", "CUSTOMER_ID")])
+    assert discover({"logs": logs}, lab)["subject_keys"] == {"logs": "logs.cust"}
+    assert discover({"logs": logs[["upn"]]}, lab)["subject_keys"] == {"logs": "logs.upn"}
