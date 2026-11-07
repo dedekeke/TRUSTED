@@ -21,6 +21,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
 import secrets
 import sys
@@ -76,6 +77,29 @@ class _StepLog(io.TextIOBase):
         with (self.logs / f"{self.step}.log").open("a", encoding="utf-8") as fh:
             fh.write(s)
         return len(s)
+
+
+@contextlib.contextmanager
+def _package_root(root: Path):
+    """Point the stages at the server's challenge package (PETS_ROOT) while a job runs. Bundled data finds it by
+    walking up from the data folder anyway; uploaded data lives in the run folder, outside the package, and needs it
+    for scenario metadata (select) and the scorecard (transform). Restored afterwards."""
+    old = os.environ.get("PETS_ROOT")
+    os.environ["PETS_ROOT"] = str(root)
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("PETS_ROOT", None)
+        else:
+            os.environ["PETS_ROOT"] = old
+
+
+def _log_tail(d: Path, step: str, n: int = 300) -> str:
+    """Last non-empty line of a step's log (the stage CLI's own message), scrubbed."""
+    p = d / "logs" / f"{step}.log"
+    lines = [x for x in p.read_text(encoding="utf-8", errors="replace").splitlines() if x.strip()] if p.is_file() else []
+    return scrub(lines[-1])[:n] if lines else ""
 
 
 class Jobs:
@@ -265,7 +289,7 @@ class Jobs:
 
     def _work(self, d: Path, start: str, attempt: int, confirm: str | None):
         log = _StepLog(d / "logs")
-        with RUN_LOCK, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+        with RUN_LOCK, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log), _package_root(self.root):
             try:
                 if start == "detect":
                     self._input(d, log)
@@ -323,7 +347,8 @@ class Jobs:
             self._set(d, "detect", status="success" if ok else "failed", error=entry.get("error"),
                       summary=api_views.summary("detect", d, ctx) if ok else "")
         elif stage == "select":
-            plan = ctx["select"] / "decisions.json"
+            sel = ctx["select"] or pipeline.stage_dir(ctx["pipeline"], "select", attempt)  # absent when select wrote nothing
+            plan = sel / "decisions.json"
             errors = json.loads(plan.read_text()).get("errors", []) if plan.is_file() else []
             only_review = bool(errors) and all(str(e).startswith("review_required") for e in errors)
             if entry.get("exit") == 0:
@@ -334,7 +359,8 @@ class Jobs:
                               summary=f"{n} columns flagged, none required by the scenario" if n
                               else "no column needs review")
             else:
-                msg = (f"{len(errors)} errors: " + str(errors[0])[:300]) if errors else "select rejected the input (see log)"
+                msg = (f"{len(errors)} errors: " + str(errors[0])[:300]) if errors else \
+                    f"select rejected the input: {_log_tail(d, 'select') or 'see the raw log'}"
                 self._set(d, "select", status="failed", error=msg,
                           summary=api_views.summary("select", d, ctx) if plan.is_file() else "blocked")
                 if only_review:

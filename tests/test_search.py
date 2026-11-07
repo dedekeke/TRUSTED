@@ -370,11 +370,11 @@ def test_configured_t_is_measured_for_every_candidate():
 def test_conflicts_name_subjects_and_sensitive_targets():
     tables, labels, rel, req = inputs(40)
     tables['visits']['score'] = 'same'
-    tables['visits'].loc[0, 'pid'] = ''
+    tables['visits'].loc[:3, 'pid'] = ''        # 4 of 40 rows (10%) without a subject: above the 5% allowance
     labels.loc[labels.column == 'score', ['privacy_role', 'subtype']] = ['sensitive_attribute', 'HEALTH_DATA']
     req.update(source='spec', targets={'k': 5, 'l': 2}, required={'visits.score': ['SCORE']})
     out = search(tables, select(tables, labels, rel, req), KEY)
-    assert 'visits: 1 rows have unresolved subject identity' in out['conflict']['violations']
+    assert 'visits: 4 rows (10.0%) have unresolved subject identity, above 5%' in out['conflict']['violations']
     assert 'visits.score: l=1 < 2' in out['conflict']['violations']
 
 
@@ -407,7 +407,7 @@ def test_search_cli_writes_decisions_and_diagnostics_without_export(tmp_path, mo
     from server.select import transform
     tables, labels, rel, req = inputs(40)
     req['source'] = 'spec'
-    tables['visits'].loc[0, 'pid'] = ''
+    tables['visits'].loc[:3, 'pid'] = ''        # 10% without a subject: above the allowance, so it is reported
     plan = select(tables, labels, rel, req)
     data = tmp_path / 'data'
     data.mkdir()
@@ -444,3 +444,33 @@ def test_greedy_skips_sensitive_steps_unless_t_is_a_target(t, tried):
     # the budget goes to quasi-identifier rungs: every allowed city rung is reached in combination
     if not tried:
         assert max(e['levels']['visits.city'] for e in out['search_trace'] if e['phase'] == 'greedy') == 3
+
+
+def test_few_unresolved_subjects_are_allowed_and_never_raise_k():
+    """S4: up to max_unknown_subjects (5%) of rows may lack a subject. Within a QI class all of them together
+    count as one person, so they can only lower k, never raise it."""
+    from server.select.search import _Evaluator, _unknown_breach
+    tables, labels, rel, req = inputs(40)
+    tables['visits'].loc[0, 'pid'] = ''         # 1 of 40 rows (2.5%)
+    req['source'] = 'spec'
+    plan = select(tables, labels, rel, req)
+    assert plan['targets']['max_unknown_subjects'] == 0.05
+    ev = _Evaluator(tables, plan, KEY, None, tables)
+    r = ev.risk(tables)['visits']
+    assert r['unknown_subject_rows'] == 1 and not _unknown_breach(r, plan['targets'])
+    # the same rows with every subject unknown: one stand-in person per class, so k cannot exceed 1
+    ev.subjects['visits'] = ev.subjects['visits'].map(lambda v: None)
+    assert ev.risk(tables)['visits']['k_anonymity']['min_k'] == 1
+
+
+def test_small_classes_count_unresolved_rows_as_one_person():
+    import pandas as pd
+    from server.actions import small_classes
+    df = pd.DataFrame({'qi': ['a'] * 4})
+    known = pd.Series(['p1', 'p2', 'p3', 'p4'])
+    unknown = pd.Series([None, None, None, None])
+    mixed = pd.Series(['p1', 'p2', None, None])
+    assert not small_classes(df, ['qi'], known, 4).any()      # 4 people
+    assert small_classes(df, ['qi'], unknown, 2).all()        # 4 unknown rows = 1 person < 2
+    assert small_classes(df, ['qi'], mixed, 4).all()          # 2 people + 1 stand-in = 3 < 4
+    assert not small_classes(df, ['qi'], mixed, 3).any()

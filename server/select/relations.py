@@ -21,9 +21,16 @@ PARENT_SAMPLE = 2000  # parent values whose shapes the child sample is compared 
 KEY_ROLES = {"record_key", "technical_identifier", "direct_identifier"}
 NOT_ID_SUBTYPES = {"DATE", "TIMESTAMP", "BIRTH_DATE", "MEASUREMENT", "FINANCIAL_DATA", "GPS_COORDINATE", "AGE",
                    "PERSON_NAME", "STREET_ADDRESS", "FREE_TEXT"}  # EMAIL stays: UPNs are real join keys
-PERSON_IDS = {"CUSTOMER_ID", "PATIENT_ID", "STUDENT_ID", "EMPLOYEE_ID", "CARD_ID", "ACCOUNT_ID"}
+# S2: a payment card, a bank account and a licence plate each single out their holder (a person or household)
+OWNED_IDS = {"PAYMENT_CARD", "IBAN", "LICENSE_PLATE"}
+PERSON_IDS = {"CUSTOMER_ID", "PATIENT_ID", "STUDENT_ID", "EMPLOYEE_ID", "CARD_ID", "ACCOUNT_ID"} | OWNED_IDS
 ACCOUNT_NAMES = {"EMAIL", "USERNAME"}  # lowest subject tier
-HOLDINGS = {"CARD_ID", "ACCOUNT_ID"}  # one row per card/account, not per person, when an owner column repeats
+# one row per card/account/vehicle, not per person, when an owner column repeats
+HOLDINGS = {"CARD_ID", "ACCOUNT_ID"} | OWNED_IDS
+# S1: direct identifiers that, when (almost) unique per row, show that each row of a table is one person
+PERSON_ROW_IDS = {"NATIONAL_ID", "EMAIL", "PHONE"}
+PERSON_ROW_UNIQUE = 0.95   # distinct share among non-blank values
+PERSON_ROW_PRESENT = 0.5   # non-blank share of rows
 STAFF_IDS = {"EMPLOYEE_ID"}  # a person, but not the data subject when a joined subject exists
 ID_LIKE = re.compile(r"^(?=.*\d)\S{3,40}$")
 DECIMAL = re.compile(r"^[-+]?\d+[.,]\d+$")
@@ -109,6 +116,46 @@ def _tier(label) -> int | None:
     return 0 if sub == "NATIONAL_ID" else 1 if sub in PERSON_IDS else 2 if sub in ACCOUNT_NAMES else None
 
 
+def _person_row_key(t, df, prof, ref_label, key_refs) -> str | None:
+    """S1: a table whose rows are people (a national id, e-mail or phone almost unique per row, even when it is
+    sometimes blank) has its own record key as subject: one row = one person, no row left without a subject."""
+    people = any(ref_label[f"{t}.{c}"] and ref_label[f"{t}.{c}"][0] == "direct_identifier"
+                 and ref_label[f"{t}.{c}"][1] in PERSON_ROW_IDS
+                 and prof[f"{t}.{c}"]["nonblank"] >= PERSON_ROW_PRESENT * prof[f"{t}.{c}"]["rows"]
+                 and prof[f"{t}.{c}"]["distinct"] >= PERSON_ROW_UNIQUE * prof[f"{t}.{c}"]["nonblank"]
+                 for c in df.columns)
+    if not people:
+        return None
+    keys = [f"{t}.{c}" for c in df.columns if f"{t}.{c}" in key_refs]
+    keys.sort(key=lambda r: (ref_label[r] is None or ref_label[r][0] != "record_key", list(df.columns).index(r.split(".", 1)[1])))
+    return keys[0] if keys else None
+
+
+def adopt_detect_subjects(rel: dict, suggestions: list[dict]) -> dict:
+    """S3: for a table selection resolved no subject for, adopt Detect's subject suggestion when it is confident
+    (>= 0.9, not under review) and present on nearly every row (>= 95%, so it leaves no rows without a subject).
+    Tables selection resolved itself are never changed. Returns rel with the adopted keys and a notice each."""
+    paths = dict(rel.get("subject_paths") or {})
+    notices = list(rel.get("notices") or [])
+    best = {}
+    for s in suggestions:
+        t, ref = s["table"], f"{s['table']}.{s['column']}"
+        if t in paths or s.get("needs_review") or (s.get("confidence") or 0) < 0.9 or \
+                (s.get("non_blank_share") or 0) < 0.95:
+            continue
+        if t not in best or s["confidence"] > best[t][0]:
+            best[t] = (s["confidence"], ref)
+    for t, (conf, ref) in sorted(best.items()):
+        paths[t] = [ref]
+        notices.append(f"subject_adopted: {ref} from the detect linkage artifact (confidence {conf:.2f}); "
+                       "selection found no subject for this table")
+    if not best:
+        return rel
+    keys = {t: p[-1] for t, p in sorted(paths.items())}
+    return {**rel, "subject_paths": dict(sorted(paths.items())), "subject_keys": keys, "notices": notices,
+            "subject_key": rel.get("subject_key") or next(iter(keys.values()), None)}
+
+
 def _subjects(tables, prof, ref_label, joins, key_refs) -> dict[str, list[str]]:
     """Per table, the path from the table to its subject column: [local ref] or [child, parent, ..., subject].
 
@@ -138,6 +185,8 @@ def _subjects(tables, prof, ref_label, joins, key_refs) -> dict[str, list[str]]:
         elif ranked:
             best = min(ranked)
             (weak if best[0] or (best[1] == 2 and best[3] not in children) else local)[t] = [best[3]]
+        elif (row_key := _person_row_key(t, df, prof, ref_label, key_refs)):
+            local[t] = [row_key]
     paths = dict(local)
     for _ in tables:  # inherit through joins until nothing changes; shortest path, then join order
         changed = False

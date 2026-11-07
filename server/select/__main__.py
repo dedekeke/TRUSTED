@@ -69,6 +69,8 @@ def cmd_select(a) -> int:
     rel = relations.discover(tables, labels, {"joins": [list(p) for j in req.get("joins") or []
                                                         for p in combinations(j["columns"], 2)]}
                              if a.declare_joins else None)
+    if manifest is not None:  # S3: Detect's confident subject suggestion for a table selection left without one
+        rel = relations.adopt_detect_subjects(rel, artifacts.subject_suggestions(manifest, tables))
     plan = select.select(tables, labels, rel, req, a.release_id)
     plan["provenance"] = artifacts.provenance(a.data, manifest, confirm_sha, select.DETECTOR_VERSION)
     if manifest is None:

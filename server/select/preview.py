@@ -2,5 +2,6 @@
 the final `server.transform` export run identical code."""
 from server.actions import (  # noqa: F401
     _blank, apply_column, blank, derive_age_band, normalise_hetu, resolved_subjects, safe_datetime, small_classes,
+    with_unknown,
 )
 from .transform import check_plan  # noqa: F401

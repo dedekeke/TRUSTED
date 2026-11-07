@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+from urllib.parse import urlsplit
 
 import numpy as np
 import pandas as pd
@@ -220,6 +221,10 @@ def apply_column(s: pd.Series, d: dict, key: bytes, release_id: str, df: pd.Data
         if p.get("mapping", DIAGNOSIS_MAPPING) != DIAGNOSIS_MAPPING:
             raise ValueError(f"unsupported diagnosis mapping {p['mapping']}")
         out = diagnosis_group(s.where(~blank(s))).fillna("")
+    elif method == "url_host":
+        out = s.astype(str).map(url_host)
+    elif method == "registrable_domain":
+        out = s.astype(str).map(lambda v: registrable_domain(url_host(v)))
     elif method == "ipv4_prefix":  # generalise to the /24 network
         ip = s.astype(str).str.strip()
         out = ip.str.replace(r"\.\d{1,3}$", ".0", regex=True).where(ip.map(lambda v: ip_ok(v) and v.count(".") == 3), "")
@@ -229,18 +234,54 @@ def apply_column(s: pd.Series, d: dict, key: bytes, release_id: str, df: pd.Data
     return out.astype(str).where(~blank(out), ""), lost
 
 
+# second-level public suffixes common enough to matter; anything else keeps its last two labels
+_TWO_LEVEL = {"co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au", "co.jp", "co.nz", "com.br",
+              "com.cn", "com.tr", "co.za", "com.mx"}
+_HOST_RX = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)*$")
+
+
+def url_host(v: str) -> str:
+    """Lower-case host of a URL or domain; '' when there is none. Credentials, port, path and query go."""
+    v = (v or "").strip()
+    if not v:
+        return ""
+    host = urlsplit(v if "//" in v else "//" + v).hostname or ""
+    host = host.rstrip(".").lower()
+    return host if _HOST_RX.match(host) else ""
+
+
+def registrable_domain(host: str) -> str:
+    """example.com from a.b.example.com; IPv4 hosts become their /24; '' when there is no host."""
+    if not host:
+        return ""
+    if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+        return re.sub(r"\.\d{1,3}$", ".0", host)
+    labels = host.split(".")
+    n = 3 if len(labels) >= 3 and ".".join(labels[-2:]) in _TWO_LEVEL else 2
+    return ".".join(labels[-n:])
+
+
 def derive_age_band(df: pd.DataFrame, birth: str, event: str, width: int = 10, top: int = 80) -> pd.Series:
     """Age at the row's original event date (toolkit formula: days / 365.25), as canonical bands."""
     age = (safe_datetime(df[event].where(~blank(df[event]))) - safe_datetime(df[birth].where(~blank(df[birth])))).dt.days / 365.25
     return Pz.to_age_band(age.where(age >= 0), width=width, top=top).fillna("")
 
 
+UNKNOWN_SUBJECT = "\x00unknown-subject"  # one stand-in person for all unresolved rows of a QI class
+
+
+def with_unknown(subjects: pd.Series) -> pd.Series:
+    """Unresolved subjects as one stand-in person: within a QI class, all of them count as a single person, the
+    most conservative reading (they might all be the same person), so they can never raise k."""
+    return subjects.astype(object).where(subjects.notna(), UNKNOWN_SUBJECT)
+
+
 def small_classes(protected: pd.DataFrame, qis: list, subjects: pd.Series, k: int) -> pd.Series:
-    """Rows whose QI class holds fewer than k distinct subjects (unknown subjects are not counted as people)."""
+    """Rows whose QI class holds fewer than k distinct subjects; unresolved rows of a class count as one person."""
     if not qis:
         return pd.Series(False, index=protected.index)
     keys = pd.util.hash_pandas_object(protected[qis].astype(str), index=False)
-    people = pd.Series(subjects.values, index=protected.index).groupby(keys.values).transform('nunique')
+    people = pd.Series(with_unknown(subjects).values, index=protected.index).groupby(keys.values).transform('nunique')
     return people < k
 
 

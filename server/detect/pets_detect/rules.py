@@ -119,7 +119,9 @@ def structure_rules(p: dict) -> Decision | None:
     if not id_like:
         return None
     if p["fk_to"] and p["unique_ratio"] < .99:
-        st = _id_subtype(name + " " + " ".join(p["fk_to"]).lower())
+        # the column's own name first (metering_point_id -> METER_ID even when it points at customers);
+        # the referenced table/column only when the name says nothing
+        st = _id_subtype(name, "") or _id_subtype(" ".join(p["fk_to"]).lower())
         return Decision("technical_identifier", st, .8,
                         f"foreign key to {', '.join(p['fk_to'][:2])}: links all records of one entity")
     if p["unique_ratio"] >= .99 and (p["col_index"] == 0 or p["is_key_target"]) and p["m_prefixed_id"] + p["frac_int"] > .8:

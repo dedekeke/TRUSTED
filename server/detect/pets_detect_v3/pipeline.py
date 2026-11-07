@@ -153,9 +153,22 @@ class DetectorV3:
                 if role == t1.privacy_role:
                     finals[i] = Decision(role, t1.subtype, comb[role], t1.reason + why_bias, "rules+" + used)
                 else:
-                    finals[i] = Decision(role, sub_for(role), comb[role],
+                    sub = sub_for(role)
+                    # D1: the subtype the neighbours suggest must fit the values (subtype check only: role "" skips
+                    # the role rules, which the router's probabilities already weigh)
+                    bad = guardrail(q, "", sub)
+                    if bad and t1.confidence >= .5 and guardrail(q, "", t1.subtype) is None:
+                        # the router's role rested on a subtype the values contradict: keep the rule decision
+                        finals[i] = Decision(t1.privacy_role, t1.subtype, t1.confidence,
+                                             t1.reason + f"; router suggested {role}/{sub} but {bad}", "rules")
+                        continue
+                    if bad:
+                        sub = t1.subtype if (role, t1.subtype) in self.pairs and \
+                            guardrail(q, "", t1.subtype) is None else "OTHER"
+                    finals[i] = Decision(role, sub, comb[role],
                                          f"{used}: {recs[i]['p_top3']}" +
                                          (f"; rules weakly suggested {t1.privacy_role}" if t1.confidence > .4 else "")
+                                         + (f"; subtype from neighbours rejected ({bad})" if bad else "")
                                          + why_bias, used)
             finals = [context_adjust(q, f) if f.source != "rules" else f for q, f in zip(qs, finals)]
 
