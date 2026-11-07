@@ -239,3 +239,45 @@ def test_linkage_reports_information_embedded_in_identifiers_without_values():
     assert any("birth date" in e for e in emb["hetu"]["encodes"]) and emb["hetu"]["evidence"] == {"encoded_attributes": 2}
     raw = json.dumps(link)
     assert "010180" not in raw and "10.0.0.1" not in raw
+
+
+def test_pipeline_runs_detect_select_search_transform_end_to_end(pkg, tmp_path, monkeypatch):
+    from server.pipeline import main as pipeline
+    root, model = pkg
+    data = root / "data" / "zz_alpha"
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"dataset": "zz_alpha", "trust_level": "internal", "targets": {"k": 1},
+                                "required": [{"column": "people.notes", "task": "T-NOTES"},
+                                             {"column": "events.category", "task": "T-CAT"}]}))
+    monkeypatch.setenv("PRIVACY_TOOL_HMAC_KEY", "test-only-key")
+    out = tmp_path / "run"
+    code = pipeline(["--data", str(data), "--spec", str(spec), "--model", str(model), "--release-id", "zz/test",
+                     "--out", str(out), "--no-scorecard"])
+    record = json.loads((out / "pipeline.json").read_text())
+    assert code == 0, record
+    assert [record["stages"][s]["exit"] for s in ("detect", "select", "search", "transform")] == [0, 0, 0, 0]
+    assert record["stages"]["search"]["approved"] is True
+    assert record["stages"]["transform"]["status"] == "validated"
+    notes = pd.read_csv(out / "transform" / "protected" / "people.csv", dtype=str, keep_default_na=False).notes
+    src = pd.read_csv(data / "people.csv", dtype=str, keep_default_na=False)
+    assert notes.str.contains(r"\[PERSON_1\]").mean() > .9          # Detect spans -> numbered pseudonyms
+    assert not any(n in " ".join(notes) for n in src.full_name)       # no source name survives
+    assert "040 " not in " ".join(notes)
+    assert json.loads((out / "transform" / "transform_stats.json").read_text())["redaction"] == \
+        {"people.notes": "detect_entity_pseudonyms+rules"}
+
+
+def test_pipeline_stops_at_an_unapproved_search(pkg, tmp_path, monkeypatch):
+    from server.pipeline import main as pipeline
+    root, model = pkg
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"dataset": "zz_alpha", "trust_level": "internal", "targets": {"k": 50},
+                                "required": [{"column": "people.city", "task": "T-CITY"},
+                                             {"column": "people.postcode", "task": "T-PC"}]}))
+    monkeypatch.setenv("PRIVACY_TOOL_HMAC_KEY", "test-only-key")
+    out = tmp_path / "run"
+    code = pipeline(["--data", str(root / "data" / "zz_alpha"), "--spec", str(spec), "--model", str(model),
+                     "--release-id", "zz/test", "--out", str(out), "--no-scorecard", "--budget", "5"])
+    record = json.loads((out / "pipeline.json").read_text())
+    assert code != 0 and record["stages"]["transform"]["status"] == "not_run"
+    assert not (out / "transform").exists()
