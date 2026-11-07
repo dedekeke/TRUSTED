@@ -1,6 +1,7 @@
 """Minimal local HTTP API over Detect v3 inference and server.select (stdlib only).
 
-  python -m server.api --model <detect model dir> --runs <new or empty runs dir> [--port 8000] [--root PKG] [--guard]
+  python -m server.api --model <detect model dir> --runs <runs dir> [--model-sha256 HEX] [--port 8000] [--root PKG]
+                       [--guard]
 
 Each run is runs/<id>/ with one fresh sub-dir per step: detect/, confirm.csv, select/, search/. A step that already
 ran answers 409 `step_done`; start a new run to redo it. Responses carry labels, statuses, counts and digests only:
@@ -73,14 +74,15 @@ def _bool(v) -> bool:
 
 
 class Api:
-    def __init__(self, root, model, runs, detect=None):
+    def __init__(self, root, model, runs, detect=None, model_sha256=None):
         self.root, self.model, self.runs = Path(root).resolve(), Path(model), Path(runs)
+        self.model_sha256 = model_sha256  # None: load_model falls back to env DETECT_MODEL_SHA256
         self.runs.mkdir(parents=True, exist_ok=True)
         self.detect = detect or self._infer
 
     def _infer(self, model, data, out):
         from pets_detect_v3 import deploy
-        return deploy.infer(model, data, out, llm=False)
+        return deploy.infer(model, data, out, llm=False, model_sha256=self.model_sha256)
 
     # ------------------------------------------------------------------ helpers
     def datasets(self) -> list[str]:
@@ -333,6 +335,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(prog="python -m server.api")
     ap.add_argument("--model", required=True, help="detect v3 model dir (from `pets_detect_v3 train`)")
     ap.add_argument("--runs", required=True, help="directory for run outputs (one fresh sub-dir per run)")
+    ap.add_argument("--model-sha256", help="pinned sha256 of model.pkl (or env DETECT_MODEL_SHA256)")
     ap.add_argument("--root", help="challenge package root (default: found upwards from the cwd)")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--guard", action="store_true", help="refuse opening catalog, gold spans, truth/, holdout/")
@@ -342,7 +345,7 @@ def main(argv=None) -> None:
         sys.exit("cannot find the challenge package root; pass --root")
     if a.guard:
         guard(root)
-    httpd = serve(Api(root, a.model, a.runs), a.port)
+    httpd = serve(Api(root, a.model, a.runs, model_sha256=a.model_sha256), a.port)
     print(f"serving on http://127.0.0.1:{a.port} (root {root}, runs {a.runs}, guard {'on' if a.guard else 'off'})",
           flush=True)
     httpd.serve_forever()
