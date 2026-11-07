@@ -46,8 +46,10 @@ def cmd_select(a) -> int:
     manifest = None
     if a.labels:
         manifest = artifacts.load_manifest(a.labels, a.data, dataset, a.manifest)
-        labels = detection_labels.from_detection(
-            pd.read_csv(a.labels, dtype=str, keep_default_na=False), tables, dataset)
+        raw = pd.read_csv(a.labels, dtype=str, keep_default_na=False)
+        if "needs_review" not in raw:
+            raise artifacts.ArtifactError("labels_schema", "bound detect labels need a needs_review column")
+        labels = detection_labels.from_detection(raw, tables, dataset)
     else:
         labels = pd.concat([detect_table(df.head(a.rows), t, dataset) for t, df in tables.items()], ignore_index=True)
     confirm_sha = None
@@ -135,15 +137,24 @@ def cmd_transform(a) -> int:
     key = os.environ.get(KEY_ENV, "").encode()
     if not key:
         sys.exit(f"set {KEY_ENV} (the HMAC key) in the environment")
-    plan = json.loads(Path(a.plan).read_text())
+    plan_bytes = Path(a.plan).read_bytes()
+    plan = json.loads(plan_bytes)
+    artifacts.check_plan(a.data, plan, plan_bytes)
     if plan.get('suppression') or any(c.get('method') in ('week_hour', 'month_hour', 'year_hour')
                                       for c in plan.get('columns', [])):
         sys.exit('this plan needs preview-only operations; complete the transform integration before export')
     out = Path(a.out)
     if out.exists():
         sys.exit(f"refusing to write into existing {out}")
-    _, stats = transform.apply(read_tables(a.data), plan, key, out / "protected", out / "evaluation")
+    try:
+        _, stats = transform.apply(read_tables(a.data), plan, key, out / "protected", out / "evaluation",
+                                   allow_unapproved=a.allow_unapproved)
+    except ValueError as e:
+        print(f"blocked: {e}", file=sys.stderr)
+        return EXIT["blocked"]
     (out / "transform_stats.json").write_text(json.dumps(stats, indent=2))
+    if not stats["release_gate"]["approved"]:
+        print(f"  UNAPPROVED export of a {plan.get('status')} plan (--allow-unapproved); not a release")
     print(f"wrote {len(stats['rows'])} tables -> {out}/protected (shareable), {out}/evaluation (private)")
     return 0
 
@@ -178,6 +189,8 @@ def main(argv=None) -> int:
     t.add_argument("--data", required=True)
     t.add_argument("--plan", required=True)
     t.add_argument("--out", required=True)
+    t.add_argument("--allow-unapproved", action="store_true",
+                   help="export a plan that is not an approved measured_ok release; recorded in the output")
     t.set_defaults(fn=cmd_transform)
     a = ap.parse_args(argv)
     try:

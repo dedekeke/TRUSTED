@@ -166,7 +166,11 @@ def _outcome(plan, current, failed, tau, base, budget, used, unexplored):
     for task in failed:
         violations.append({'metric': 'utility', 'table': None, 'target': None if base.get(task) is None else tau * base[task],
                            'achieved': current['utility'].get(task), 'requirements': [task]})
-    return {'policy_valid': True, 'targets_met': not violations, 'approved': plan['status'] == 'measured_ok',
+    # approval also needs inputs bound to a detect manifest; the built-in detector is never approval evidence
+    bound = (plan.get('provenance') or {}).get('bound') is True
+    issues = [] if bound else ['provenance_unbound']
+    return {'policy_valid': True, 'targets_met': not violations, 'approved': plan['status'] == 'measured_ok' and bound,
+            'issues': issues,
             'budget': {'used': used, 'limit': budget, 'exhausted': used >= budget and unexplored > 0,
                        'unexplored': unexplored},
             'targets': {**targets, 'tau': tau}, 'achieved': achieved, 'violations': violations}
@@ -393,6 +397,9 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
                        'requirement_floors': floors}
     out['search_trace'] = trace
     out['outcome'] = _outcome(out, current, failures(current), tau, base, budget, len(trace), unexplored)
+    if 'provenance_unbound' in out['outcome']['issues']:
+        out['warnings'] = out.get('warnings', []) + [
+            'provenance_unbound: plan is not bound to a detect manifest; measured results cannot approve a release']
     if out['status'] != 'measured_ok':
         violations = []
         for table, risk in current['risk'].items():

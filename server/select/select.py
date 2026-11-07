@@ -183,7 +183,7 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
     # 3. person context crosses joins: place/time in a table linked to people is a quasi-identifier
     people = _person_tables(lab, relations)
     for ref, l in lab.items():
-        if _split(ref)[0] in people and l["privacy_role"] == "non_sensitive" and l["subtype"] in CONTEXT_QI:
+        if _split(ref)[0] in people and l["privacy_role"] == "non_sensitive" and l["subtype"] in CONTEXT_QI | {"URL"}:
             lab[ref] = {**l, "privacy_role": "quasi_identifier",
                         "evidence": f"{l.get('evidence', '')}; linked to people through a join"}
 
@@ -348,7 +348,9 @@ def render(plan: dict) -> str:
     lines = [f"# Release plan: {plan['scenario'] or plan['dataset']} ({plan['trust_level']})", "",
              f"Status: **{plan['status']}**: {STATUS_TEXT.get(plan['status'], 'unknown status')}. "
              f"Targets: {plan['targets']}", "",
-             f"Approved release: **{'yes' if (plan.get('outcome') or {}).get('approved') else 'no'}**", ""]
+             f"Approved release: **{'yes' if (plan.get('outcome') or {}).get('approved') else 'no'}**"
+             + ("; provenance_unbound: the plan is not bound to a detect manifest (built-in detector), so it cannot "
+                "be approved" if "provenance_unbound" in (plan.get("outcome") or {}).get("issues", []) else ""), ""]
     prov = plan.get("provenance")
     if prov:
         lines += [f"Provenance: {'bound to detect manifest' if prov.get('bound') else 'UNBOUND (legacy built-in detector)'}"

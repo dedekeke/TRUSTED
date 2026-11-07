@@ -166,9 +166,18 @@ targets, achieved, violations: [{metric, table, target, achieved, requirements}]
 
 Named issue codes. Rejections (exit 2, no output): `manifest_missing`, `manifest_schema`, `dataset_mismatch`,
 `table_set_mismatch`, `input_mismatch` (names the table; one changed cell is enough), `fingerprint_mismatch`,
-`labels_mismatch`, `artifact_mismatch`, `artifact_missing`, `provenance_missing` (search). Plan errors/warnings:
-`unsupported_label`, `review_required`, `stale_span`, `missing_span_evidence`, `ambiguous_join`,
-`ambiguous_subject` (warning; selection keeps its own subject resolution).
+`labels_mismatch`, `labels_schema` (bound labels need `needs_review`), `artifact_mismatch`, `artifact_missing`,
+`provenance_missing` (search/transform). Plan errors/warnings: `unsupported_label`, `review_required`, `stale_span`,
+`missing_span_evidence` (a needed free-text column absent from `artifacts.spans.columns`, or without spans when an
+older manifest has no such map), `missing_linkage_evidence` (an error when a released column is a join/subject
+key), `ambiguous_join`, `ambiguous_subject` (warning; selection keeps its own subject resolution) and
+`provenance_unbound` (search on a built-in-detector plan: `outcome.approved` stays false). Only 16-hex ids from
+artifacts are echoed; anything else is reported as `line N` / `relation N`.
+
+`transform` exports only an approved `measured_ok` plan and first re-checks the plan's input digests. Any other
+non-blocked status (`policy_valid`, `target_unmet`, `budget_exhausted`, unapproved `measured_ok`) needs
+`--allow-unapproved`; the gate is recorded in `transform_stats.json` (`release_gate`) and as
+`NOT_APPROVED.txt` in both output directories. `blocked` never exports.
 
 `select --labels <detect out>/labels.csv` requires the contract-v1 `manifest.json` next to it (or `--manifest`):
 raw-byte sha256 of every input CSV, the labels/spans/linkage digests and the label vocabulary. `decisions.json`

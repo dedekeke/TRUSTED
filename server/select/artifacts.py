@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 PROVENANCE_SCHEMA = "pets.select.provenance/1"
 MANIFEST_SCHEMA = "pets.detect.manifest/1"
 SPANS_SCHEMA = "pets.detect.spans/1"
 LINKAGE_SCHEMA = "pets.detect.linkage/1"
+ID_RX = re.compile(r"[0-9a-f]{16}")  # only ids of this shape are echoed; never free strings from artifacts
 SPAN_KEYS = {"span_id", "table", "column", "row_index", "start", "end", "entity_type", "entity_id", "confidence",
              "needs_review"}
 
@@ -77,8 +79,19 @@ def load_manifest(labels_path, data, dataset, manifest_path=None) -> dict:
     if manifest.get("dataset_fingerprint") != dataset_fingerprint(shas):
         raise ArtifactError("fingerprint_mismatch", "manifest dataset_fingerprint does not match its inputs")
     arts = manifest.get("artifacts") or {}
-    if "labels" not in arts:
-        raise ArtifactError("manifest_schema", "manifest artifacts need labels")
+    if not isinstance(arts, dict) or "labels" not in arts or not all(
+            isinstance(a, dict) and isinstance(a.get("file"), str) and isinstance(a.get("sha256"), str)
+            and Path(a["file"]).name == a["file"] for a in arts.values()):
+        raise ArtifactError("manifest_schema", "manifest artifacts need labels and {file, sha256} entries "
+                                               "naming files in the detect directory")
+    columns = arts.get("spans", {}).get("columns")
+    if columns is not None and not (isinstance(columns, dict) and all(isinstance(v, dict) for v in columns.values())):
+        raise ArtifactError("manifest_schema", "artifacts.spans.columns must map table.column to {cells, spans}")
+    vocab = manifest.get("label_vocabulary") or []
+    if not isinstance(vocab, list) or not all(isinstance(v, list) and len(v) == 2 for v in vocab):
+        raise ArtifactError("manifest_schema", "label_vocabulary must be a list of [privacy_role, subtype] pairs")
+    if not isinstance(manifest.get("detector") or {}, dict):
+        raise ArtifactError("manifest_schema", "manifest detector must be an object")
     resolved = {}
     for name, art in arts.items():
         file = path.parent / art["file"]
@@ -150,55 +163,82 @@ def check_evidence(plan: dict, tables: dict, labels, manifest: dict) -> tuple[li
         except (ValueError, TypeError, KeyError):
             ok = False
         if not ok:
-            stale.append(s.get("span_id") if isinstance(s, dict) and isinstance(s.get("span_id"), str) else f"line {n}")
+            sid = s.get("span_id") if isinstance(s, dict) else None
+            stale.append(sid if isinstance(sid, str) and ID_RX.fullmatch(sid) else f"line {n}")
             continue
         ref = f"{s['table']}.{s['column']}"
         by_column[ref] = by_column.get(ref, 0) + 1
     if stale:
         errors.append(f"stale_span: {len(stale)} span(s) do not match the current data/offsets "
                       f"(e.g. {', '.join(stale[:3])}); re-run detect")
+    # columns detect scanned (clean ones too); older manifests without the map fall back to columns with spans
+    scanned = manifest.get("artifacts", {}).get("spans", {}).get("columns")
+    scanned = by_column if scanned is None else scanned
     for r in labels.to_dict("records"):
         ref = f"{r['table']}.{r['column']}"
-        if (r["privacy_role"] == "free_text" or r["subtype"] == "FREE_TEXT") and ref not in by_column:
+        if (r["privacy_role"] == "free_text" or r["subtype"] == "FREE_TEXT") and ref not in scanned:
             (errors if ref in released else warnings).append(
                 f"missing_span_evidence: free-text column {ref} has no detect spans")
 
     relations, ambiguous, path = [], set(), manifest["_paths"].get("linkage")
+    subjects = set((plan.get("subject_keys") or {}).values())
     if path:
-        link = json.loads(path.read_text())
-        if not isinstance(link, dict) or link.get("schema") != LINKAGE_SCHEMA:
-            raise ArtifactError("manifest_schema", f"linkage artifact must declare schema {LINKAGE_SCHEMA}")
-        relations = link.get("relations") or []
+        try:
+            link = json.loads(path.read_text())
+        except ValueError:
+            link = None
+        if not isinstance(link, dict) or link.get("schema") != LINKAGE_SCHEMA or \
+                not isinstance(link.get("relations") or [], list):
+            raise ArtifactError("manifest_schema", f"linkage artifact must be JSON with schema {LINKAGE_SCHEMA}")
+        relations = [r for r in link.get("relations") or [] if isinstance(r, dict)]
+        if len(relations) != len(link.get("relations") or []):
+            raise ArtifactError("manifest_schema", "linkage relations must be objects")
+    else:
+        keyed = sorted(released & (plan_join | subjects))
+        (errors if keyed else warnings).append(
+            "missing_linkage_evidence: no detect linkage artifact" +
+            (f"; released join/subject columns {', '.join(keyed)} are unchecked" if keyed else ""))
+    schema = {f"{t}.{c}" for t, df in tables.items() for c in df.columns}
+
+    def ref(side):
+        x = f"{side.get('table')}.{side.get('column')}" if isinstance(side, dict) else None
+        return x if x in schema else None  # unknown refs are never echoed
+
+    def rid(r, i):
+        x = r.get("relation_id")
+        return x if isinstance(x, str) and ID_RX.fullmatch(x) else f"relation {i}"
+
     ours = {frozenset((j["parent"], j["child"])) for j in plan.get("joins", [])}
-    joins = [r for r in relations if r.get("kind") == "join" and r.get("right")]
-    partners = {}
-    try:
-        refs = [tuple(f"{r[s]['table']}.{r[s]['column']}" for s in ("left", "right")) for r in joins]
-    except (KeyError, TypeError):
-        raise ArtifactError("manifest_schema", "linkage join relations need left/right {table, column}") from None
-    for a, b in refs:
-        partners.setdefault(a, set()).add(b)
-        partners.setdefault(b, set()).add(a)
     parents = {j["parent"] for j in plan.get("joins", [])}
-    for r, (a, b) in zip(joins, refs):
+    joins = [(i, r, ref(r.get("left")), ref(r.get("right"))) for i, r in enumerate(relations) if r.get("kind") == "join"]
+    partners = {}
+    for _, _, a, b in joins:
+        if a and b:
+            partners.setdefault(a, set()).add(b)
+            partners.setdefault(b, set()).add(a)
+    for i, r, a, b in joins:
+        if not (a and b):
+            ambiguous.add(rid(r, i))
+            warnings.append(f"ambiguous_join: detect relation {rid(r, i)} names a column missing from the input")
+            continue
         # under review, a non-key column linked to several partners, or a link selection's own joins contradict
         if r.get("needs_review") or any(len(partners[x]) > 1 and x not in parents for x in (a, b)) or \
                 ((a in plan_join or b in plan_join) and frozenset((a, b)) not in ours):
-            ambiguous.add(r.get("relation_id"))
+            ambiguous.add(rid(r, i))
             (errors if {a, b} & (plan_join | released) else warnings).append(
-                f"ambiguous_join: detect relation {r.get('relation_id')} ({a} -> {b}) is under review, "
+                f"ambiguous_join: detect relation {rid(r, i)} ({a} -> {b}) is under review, "
                 "conflicting or not confirmed by selection's joins")
-    ours_subjects = set((plan.get("subject_keys") or {}).values())
-    for r in relations:
-        if r.get("kind") != "subject" or not isinstance(r.get("left"), dict):
+    for i, r in enumerate(relations):
+        if r.get("kind") != "subject":
             continue
-        ref = f"{r['left'].get('table')}.{r['left'].get('column')}"
-        if ref not in ours_subjects:  # selection keeps its own subject resolution; never adopt the suggestion
-            ambiguous.add(r.get("relation_id"))
-            warnings.append(f"ambiguous_subject: detect relation {r.get('relation_id')} suggests {ref} as a subject "
-                            f"key; selection resolved {sorted(ours_subjects) or 'none'} and does not adopt it")
+        x = ref(r.get("left"))
+        if x not in subjects:  # selection keeps its own subject resolution; never adopt the suggestion
+            ambiguous.add(rid(r, i))
+            warnings.append(f"ambiguous_subject: detect relation {rid(r, i)} suggests "
+                            f"{x or 'a column missing from the input'} as a subject key; selection resolved "
+                            f"{sorted(subjects) or 'none'} and does not adopt it")
     summary = {"spans": {"count": sum(by_column.values()), "by_column": by_column, "stale": len(stale)},
-               "linkage": {"relations": len(relations), "joins": len(joins),
+               "linkage": {"present": path is not None, "relations": len(relations), "joins": len(joins),
                            "subjects": sum(r.get("kind") == "subject" for r in relations),
                            "ambiguous": sorted(map(str, ambiguous))}}
     return errors, warnings, summary
