@@ -46,7 +46,16 @@ NUMERIC = {"MEASUREMENT", "FINANCIAL_DATA", "DURATION"}
 # Identifier subtypes are handled as identifiers whatever role a label gives them (a raw email is never KEEP).
 ID_SUBTYPE_ROLE = {**{s: "direct_identifier" for s in DIRECT | {"NATIONAL_ID"}},
                    **{s: "technical_identifier" for s in TECHNICAL | ENTITY_IDS | {"IMEI"}},
-                   "RECORD_ID": "record_key"}
+                   "ENTITY_ID": "technical_identifier", "RECORD_ID": "record_key"}
+# Subtypes handled by their own rules when the label's role doesn't fit them: subtype -> (role used, roles accepted).
+SUBTYPE_REROUTE = {
+    **{s: (r, IDS) for s, r in ID_SUBTYPE_ROLE.items()},
+    "BIRTH_DATE": ("quasi_identifier", {"quasi_identifier", "sensitive_attribute"}),  # derive-only in any role
+    # identifier roles are stricter than these subtypes' own rules, so they are never rerouted
+    "FREE_TEXT": ("free_text", IDS | {"free_text"}),
+    "DIAGNOSIS_CODE": ("sensitive_attribute", IDS | {"sensitive_attribute", "quasi_identifier"}),
+    "STREET_ADDRESS": ("quasi_identifier", IDS | {"quasi_identifier", "sensitive_attribute"}),
+}
 AGE_TOP = 80  # canonical bands 0-9 … 80+ (plan §9)
 
 
@@ -112,14 +121,14 @@ def targets(trust_level: str, scenario_targets: dict | None = None) -> dict:
     return {**base, **over, "notes": notes}
 
 
-def _ladder(role: str, sub: str, trust_level: str, required: bool, in_join: bool, notes: list) -> tuple:
+def _ladder(role: str, sub: str, trust_level: str, required: bool, in_join: bool, k: int, notes: list) -> tuple:
     """(tagged ladder, escalate). Ladders here never include DROP; DROP is appended by the caller."""
-    k = DEFAULT_TARGETS[trust_level]["k"]
     if role in IDS:
         if not (required or in_join):
             return [], None
         if role == "technical_identifier" and sub == "IP_ADDRESS" and not in_join:
-            return [(None, _r("GENERALISE", "ipv4_prefix")), (None, HMAC)], None
+            # HMAC keeps addresses distinct; the /24 groups them (a location-type QI), so it is the coarser rung
+            return [(None, HMAC), (None, _r("GENERALISE", "ipv4_prefix"))], None
         return [(None, HMAC)], None
     if role == "quasi_identifier":
         if not required:
@@ -158,19 +167,22 @@ def _ladder(role: str, sub: str, trust_level: str, required: bool, in_join: bool
 
 
 def candidates(label: dict, trust_level: str, required: bool, in_join: bool = False,
-               precision: str | int | None = None) -> dict:
-    """Allowed rungs for one column, finest → coarsest, plus review/escalation flags."""
+               precision: str | int | None = None, k: int | None = None) -> dict:
+    """Allowed rungs for one column, finest → coarsest, plus review/escalation flags.
+
+    k: effective risk target (pass targets(...)["k"]); sets merge_rare's min_count. Defaults to the trust level's k.
+    """
     _check_trust(trust_level)
     role, sub = label["privacy_role"], label.get("subtype")
     notes = []
-    if sub in ID_SUBTYPE_ROLE and role not in IDS:
-        notes.append(f"{sub} labelled {role}: handled as {ID_SUBTYPE_ROLE[sub]}, review")
-        role = ID_SUBTYPE_ROLE[sub]
-    if sub == "BIRTH_DATE" and role not in ("quasi_identifier", "sensitive_attribute"):  # derive-only in any role
-        notes.append(f"BIRTH_DATE labelled {role}: handled as quasi_identifier, review")
-        role = "quasi_identifier"
+    if sub in SUBTYPE_REROUTE and role not in SUBTYPE_REROUTE[sub][1]:
+        notes.append(f"{sub} labelled {role}: handled as {SUBTYPE_REROUTE[sub][0]}, review")
+        role = SUBTYPE_REROUTE[sub][0]
     low_conf = float(label.get("confidence", 0.0)) < REVIEW_BELOW
-    ladder, escalate = _ladder(role, sub, trust_level, required, in_join, notes)
+    k = DEFAULT_TARGETS[trust_level]["k"] if k is None else int(k)
+    if k < 1:
+        raise ValueError(f"k must be >= 1, got {k}")
+    ladder, escalate = _ladder(role, sub, trust_level, required, in_join, k, notes)
     needs_review = low_conf or bool(notes)
     needed = required or in_join
     if precision is not None and ladder:
@@ -200,7 +212,7 @@ def _matches(rung: dict, allowed: dict) -> bool:
         and all((p[key] is not None) if v is None else p[key] == v for key, v in q.items())
 
 
-def violations(label: dict, rung: dict, trust_level: str) -> list[str]:
+def violations(label: dict, rung: dict, trust_level: str, k: int | None = None) -> list[str]:
     """Hard-constraint breaches of one rung for one column; empty list means allowed."""
     _check_trust(trust_level)
     role, sub = label.get("privacy_role"), label.get("subtype")
@@ -225,7 +237,7 @@ def violations(label: dict, rung: dict, trust_level: str) -> list[str]:
     if out or (action == "DROP" and method is None):
         return out
     try:
-        allowed = [r for join in (True, False) for r in candidates(label, trust_level, True, join)["rungs"]]
+        allowed = [r for join in (True, False) for r in candidates(label, trust_level, True, join, k=k)["rungs"]]
     except (KeyError, ValueError) as e:
         return [f"label not covered by the rule matrix: {e}"]
     if not any(_matches(rung, a) for a in allowed):

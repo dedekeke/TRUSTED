@@ -11,10 +11,10 @@ ROLES = ["direct_identifier", "technical_identifier", "record_key", "quasi_ident
 # every subtype detect.py can emit
 SUBTYPES = sorted(detect.DIRECT | detect.TECHNICAL | detect.PERSON_QI | detect.CONTEXT_QI | detect.ENTITY_IDS
                   | {"NATIONAL_ID", "URL", "DIAGNOSIS_CODE", "FINANCIAL_DATA", "RECORD_ID", "MEASUREMENT",
-                     "FREE_TEXT", "CATEGORY", "OTHER"})
+                     "FREE_TEXT", "CATEGORY", "OTHER", "ENTITY_ID"})
 IDS = {"direct_identifier", "technical_identifier", "record_key"}
-ID_SUBTYPES = detect.DIRECT | detect.TECHNICAL | detect.ENTITY_IDS | {"NATIONAL_ID", "RECORD_ID"}
-REROUTED = ID_SUBTYPES | {"BIRTH_DATE"}  # handled by their subtype's own rules whatever the role
+ID_SUBTYPES = detect.DIRECT | detect.TECHNICAL | detect.ENTITY_IDS | {"NATIONAL_ID", "RECORD_ID", "ENTITY_ID"}
+REROUTED = ID_SUBTYPES | {"BIRTH_DATE", "STREET_ADDRESS"}  # handled by their subtype's own rules (DROP + review)
 
 
 def lab(role, sub, conf=0.9):
@@ -93,9 +93,27 @@ def test_should_pseudonymise_identifiers_that_bind_a_join():
     assert methods(candidates(lab("record_key", "RECORD_ID"), "public", False, in_join=True)) == ["hmac_sha256"]
 
 
-def test_should_generalise_ip_to_prefix_before_hmac_when_required_outside_a_join():
+def test_should_coarsen_ip_from_hmac_to_prefix_when_required_outside_a_join():
     c = candidates(lab("technical_identifier", "IP_ADDRESS"), "internal", True)
-    assert [(r["action"], r["method"]) for r in c["rungs"]] == [("GENERALISE", "ipv4_prefix"), ("HMAC", "hmac_sha256")]
+    assert [(r["action"], r["method"]) for r in c["rungs"]] == [("HMAC", "hmac_sha256"), ("GENERALISE", "ipv4_prefix")]
+    assert methods(candidates(lab("technical_identifier", "IP_ADDRESS"), "internal", True, in_join=True)) == ["hmac_sha256"]
+
+
+def test_should_never_keep_text_diagnoses_or_addresses_labelled_non_sensitive_at_public():
+    for sub in ("FREE_TEXT", "DIAGNOSIS_CODE", "STREET_ADDRESS"):
+        for req in (True, False):
+            c = candidates(lab("non_sensitive", sub), "public", req)
+            assert actions(c) == ["DROP"] and c["needs_review"], (sub, req)
+
+
+def test_should_merge_rare_values_below_the_effective_k():
+    lang = lab("quasi_identifier", "LANGUAGE")
+    merge = candidates(lang, "contractual", True, k=11)["rungs"][-1]
+    assert merge["params"]["min_count"] == 11
+    assert violations(lang, merge, "contractual", k=11) == [] and violations(lang, merge, "contractual")
+    assert candidates(lang, "public", True)["rungs"][-1]["params"]["min_count"] == targets("public")["k"]
+    with pytest.raises(ValueError):
+        candidates(lang, "public", True, k=0)
 
 
 def test_should_order_time_ladders_finest_to_coarsest():
