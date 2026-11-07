@@ -11,7 +11,7 @@ export default defineConfig({
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   server: {
-    // the FastAPI backend (server/) will be proxied here once it exists
-    proxy: { '/api': 'http://localhost:8000' },
+    // server/api.py binds 127.0.0.1; use with VITE_API_BASE_URL=/ (or point VITE_API_BASE_URL at it directly)
+    proxy: { '/api': 'http://127.0.0.1:8000' },
   },
 })
