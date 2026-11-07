@@ -1,0 +1,4 @@
+table,column,privacy_role,subtype
+ed_visits,triage,sensitive_attribute,HEALTH_DATA
+lab_results,test_code,non_sensitive,CATEGORY
+lab_results,value,sensitive_attribute,MEASUREMENT
