@@ -211,7 +211,9 @@ class Api:
             raise ApiError(409, "select_missing", "run select first")
         self.fresh(d / "search", "search")
         a = SimpleNamespace(data=str(self.data_dir(d)), plan=str(d / "select" / "decisions.json"),
-                            out=str(d / "search"), budget=budget, tau=0.8)
+                            out=str(d / "search"), budget=budget, tau=0.8,
+                            # same as server.pipeline: free text is measured with the Detect spans the export uses
+                            detect=str(d / "detect"))
         self.step(d, "search", lambda: cli.cmd_search(a))
         return self.state(run_id)
 
