@@ -30,6 +30,7 @@ def score(pred, catalog, datasets=None):
 def run_variant(cfg: Config, root, datasets=None):
     d = DetectorV3(cfg, root)
     dss = datasets or d.labelled
+    d.prefit(dss)
     return pd.concat([d.detect(x) for x in dss], ignore_index=True), d
 
 
