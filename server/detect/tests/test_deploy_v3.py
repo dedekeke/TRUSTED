@@ -224,3 +224,18 @@ def test_no_or_ambiguous_group_key_keeps_one_group_per_cell():
     spans = list(deploy._spans(tables, labels, None, "f" * 64, 0.6, {}, ps, groups))
     ids = {s["row_index"]: s["entity_id"] for s in spans if s["entity_type"] == "PHONE"}
     assert ids[0] != ids[1] and groups == {"turns.text": None}
+
+
+def test_linkage_reports_information_embedded_in_identifiers_without_values():
+    tables = {"people": pd.DataFrame({"hetu": ["010180-901A", "020290-902B"], "ip": ["10.0.0.1", "10.0.0.2"]})}
+    labels = pd.DataFrame([{"table": "people", "column": "hetu", "privacy_role": "direct_identifier",
+                            "subtype": "NATIONAL_ID", "confidence": .99, "needs_review": False},
+                           {"table": "people", "column": "ip", "privacy_role": "technical_identifier",
+                            "subtype": "IP_ADDRESS", "confidence": .9, "needs_review": False}])
+    ps = [{"table": "people", "column": c, "fk_to": []} for c in ("hetu", "ip")]
+    link = deploy._linkage(ps, tables, labels, "f" * 64)
+    emb = {r["left"]["column"]: r for r in link["relations"] if r["kind"] == "embedded"}
+    assert set(emb) == {"hetu", "ip"} and emb["hetu"]["right"] is None
+    assert any("birth date" in e for e in emb["hetu"]["encodes"]) and emb["hetu"]["evidence"] == {"encoded_attributes": 2}
+    raw = json.dumps(link)
+    assert "010180" not in raw and "10.0.0.1" not in raw

@@ -27,6 +27,7 @@ from pets_detect.patterns import ROLES, SUBTYPES
 from pets_detect.pipeline import root_paths
 from pets_detect.profiler import SAMPLE_ROWS, profile_dataset
 
+from pets_detect_v2.linkage import EMBEDDED
 from pets_detect_v2.spans import run as S
 from pets_detect_v2.spans.merge import assign_entities
 from pets_detect_v2.spans.tagger import Dictionaries, Tagger
@@ -270,6 +271,12 @@ def _linkage(ps, tables, labels, fp: str) -> dict:
                          "distinct": int(filled.nunique()),
                          "rows_per_value": round(len(filled) / max(filled.nunique(), 1), 3)},
                         row.confidence, row.needs_review))
+    # information hidden inside an identifier (a HETU encodes birth date and sex): fixed descriptions, no values
+    for row in labels[labels.subtype.isin(list(EMBEDDED))].itertuples():
+        r = rel("embedded", (row.table, row.column), None, {"encoded_attributes": len(EMBEDDED[row.subtype])},
+                row.confidence, row.needs_review)  # evidence stays numeric (contract v1)
+        r["encodes"] = list(EMBEDDED[row.subtype])  # fixed descriptions from the detector, never data values
+        rels.append(r)
     return {"schema": "pets.detect.linkage/1", "relations": rels}
 
 
