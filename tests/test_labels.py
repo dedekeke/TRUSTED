@@ -34,7 +34,7 @@ def test_v3_artifact_preserves_review_without_copying_raw_reasons():
     assert 'secret@example.com' not in json.dumps(plan) + out.to_json()
     reviewed = confirm(out, pd.DataFrame([{'table': 'people', 'column': 'score',
                                          'privacy_role': 'non_sensitive', 'subtype': 'MEASUREMENT'}]))
-    assert select(tables, reviewed, discover(tables, reviewed), req)['status'] == 'ready_for_transform'
+    assert select(tables, reviewed, discover(tables, reviewed), req)['status'] == 'policy_valid'
 
 
 @pytest.mark.parametrize('value', ['nan', 'inf', '-.1', '1.1', 'unknown'])
@@ -84,8 +84,8 @@ def test_detect_to_select_to_search_cli(tmp_path, monkeypatch):
     data = tmp_path / 'demo'
     data.mkdir()
     tables['people'].to_csv(data / 'people.csv', index=False)
-    label_path = tmp_path / 'detect.csv'
-    labels.to_csv(label_path, index=False)
+    from tests.contract_fixture import write_detect_dir
+    label_path = write_detect_dir(tmp_path / 'detect', data, labels)
     spec = tmp_path / 'spec.json'
     spec.write_text(json.dumps({'dataset': 'demo', 'trust_level': 'internal', 'targets': {'k': 1},
                                 'required': [{'column': 'people.score', 'task': 'SCORE'}]}))

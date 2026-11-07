@@ -49,7 +49,7 @@ def by_ref(plan):
 def test_complete_plan_one_decision_per_column():
     tables, labels, rel, req = inputs()
     plan = select(tables, labels, rel, req)
-    assert plan["status"] == "ready_for_transform", plan["errors"]
+    assert plan["status"] == "policy_valid", plan["errors"]
     released = [t for t, d in plan["tables"].items() if d["action"] == "RELEASE"]
     assert sorted(released) == ["labs", "visits"] and plan["tables"]["notes"]["action"] == "WITHHOLD"
     assert {f"{c['table']}.{c['column']}" for c in plan["columns"]} == {f"{t}.{c}" for t in released for c in tables[t].columns}
@@ -100,7 +100,7 @@ def test_blocks_missing_or_uncertain_required_columns():
     assert plan["status"] == "blocked" and any("confirm" in e for e in plan["errors"])
     fixed = confirm(labels, pd.DataFrame([{"table": "labs", "column": "code", "privacy_role": "non_sensitive",
                                            "subtype": "CATEGORY"}]))
-    assert select(tables, fixed, rel, req)["status"] == "ready_for_transform"
+    assert select(tables, fixed, rel, req)["status"] == "policy_valid"
 
 
 def test_any_of_without_usable_alternative_blocks():
@@ -158,7 +158,7 @@ def test_protection_downgrade_requires_permission_and_warns(table, column):
         confirm(labels, down)
     fixed = confirm(labels, down, allow_downgrade=True)
     plan = select(tables, fixed, rel, req)
-    assert plan["status"] == "ready_for_transform", plan["errors"]
+    assert plan["status"] == "policy_valid", plan["errors"]
     assert by_ref(plan)[ref]["action"] == "KEEP"
     assert any(ref in w and "downgrade explicitly allowed" in w for w in plan["warnings"])
     assert "downgrade explicitly allowed" in render(plan)
@@ -174,7 +174,7 @@ def test_retained_protected_subtype_is_not_a_downgrade(table, column):
     unchanged["privacy_role"] = "non_sensitive"
     fixed = confirm(labels, unchanged)
     plan = select(tables, fixed, rel, req)
-    assert plan["status"] == "ready_for_transform", plan["errors"]
+    assert plan["status"] == "policy_valid", plan["errors"]
     assert not any("downgrade" in w for w in plan["warnings"])
     assert by_ref(plan)[ref]["action"] != "KEEP"
     down = unchanged.assign(subtype="CATEGORY")
@@ -196,7 +196,7 @@ def test_discovered_relation_conflict_blocks_but_notice_only_warns():
     assert "relations: subject key was not declared" in plan["warnings"]
     rel["conflicts"] = []
     plan = select(tables, labels, rel, req)
-    assert plan["status"] == "ready_for_transform", plan["errors"]
+    assert plan["status"] == "policy_valid", plan["errors"]
 
 
 def test_low_coverage_join_not_trusted_and_same_subtype_ids_share_domain():

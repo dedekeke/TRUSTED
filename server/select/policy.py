@@ -10,6 +10,7 @@ from __future__ import annotations
 from .detect import DIRECT, ENTITY_IDS, REVIEW_BELOW, TECHNICAL
 
 TRUST_LEVELS = ["internal", "contractual", "controlled_research", "public"]
+ENTITY_PSEUDONYM_TRUST = {"internal", "contractual"}  # free-text profile: numbered pseudonyms per conversation
 ACTIONS = {"KEEP", "DROP", "HMAC", "GENERALISE", "REDACT", "DERIVE", "WITHHOLD"}  # WITHHOLD is table-level
 
 # Operations the transformer must implement; each rung uses exactly one. Params:
@@ -36,7 +37,8 @@ METHODS = {
     "icd_3char",        # {}: ICD-10 category, e.g. J18.9 -> J18
     "diagnosis_group",  # {mapping}: must be "pets_eval.utility.health.diagnosis_group"; unmapped codes become blank
     "icd_chapter",      # {}: first letter of the ICD-10 code
-    "redact_spans",     # {profile}: replace detected PII spans with typed placeholders
+    "redact_spans",     # {profile}: replace detected PII spans; profile "typed_placeholders" -> [PERSON],
+                        #   "entity_pseudonyms" -> [PERSON_1], numbered per Detect entity within one conversation
 }
 NEEDS_METHOD = {"HMAC", "GENERALISE", "DERIVE", "REDACT"}
 
@@ -60,6 +62,15 @@ SUBTYPE_REROUTE = {
     "STREET_ADDRESS": ("quasi_identifier", IDS | {"quasi_identifier", "sensitive_attribute"}),
 }
 AGE_TOP = 80  # canonical bands 0-9 … 80+ (plan §9)
+ROLES = IDS | {"quasi_identifier", "sensitive_attribute", "free_text", "non_sensitive"}
+# metadata/taxonomy.md column subtypes (the vocabulary, not the training catalog)
+TAXONOMY_SUBTYPES = set("""PERSON_NAME NATIONAL_ID EMAIL PHONE STREET_ADDRESS POSTCODE MUNICIPALITY GPS_COORDINATE
+    LOCATION_NAME BIRTH_DATE AGE SEX LANGUAGE NATIONALITY IBAN PAYMENT_CARD CUSTOMER_ID ACCOUNT_ID EMPLOYEE_ID
+    STUDENT_ID PATIENT_ID CARD_ID DEVICE_ID IP_ADDRESS MAC_ADDRESS IMEI HOSTNAME USERNAME URL USER_AGENT LICENSE_PLATE
+    PROPERTY_ID METER_ID TIMESTAMP DATE DURATION HEALTH_DATA DIAGNOSIS_CODE FINANCIAL_DATA EDUCATION_DATA SOCIAL_DATA
+    OCCUPATION ORG_NAME MEASUREMENT CATEGORY AGGREGATE SECRET FREE_TEXT RECORD_ID OTHER""".split()) | {"ENTITY_ID"}
+SENSITIVE_CATEGORICAL = CATEGORICAL_QI | {"HEALTH_DATA", "EDUCATION_DATA", "SOCIAL_DATA"}
+NEVER_RAW = {"SECRET", "HEALTH_DATA", "EDUCATION_DATA", "SOCIAL_DATA"}  # contradicts a non_sensitive role
 
 
 def _r(action, method=None, **params) -> dict:
@@ -169,10 +180,43 @@ def _ladder(role: str, sub: str, trust_level: str, required: bool, in_join: bool
             return [], None
         if trust_level == "public":
             return [], "free text not releasable at public trust: needs aggregate/DP path"
-        return [(None, _r("REDACT", "redact_spans", profile="typed_placeholders"))], None
+        # contractual/internal recipients (e.g. an LLM vendor reading transcripts) need to follow who said what:
+        # numbered placeholders consistent within one conversation/record, never across them
+        profile = "entity_pseudonyms" if trust_level in ENTITY_PSEUDONYM_TRUST else "typed_placeholders"
+        return [(None, _r("REDACT", "redact_spans", profile=profile))], None
     if role == "non_sensitive":
         return [("exact", KEEP)], None
     raise ValueError(f"unknown privacy_role {role!r}")
+
+
+def _route(role, sub):
+    if sub in SUBTYPE_REROUTE and role not in SUBTYPE_REROUTE[sub][1]:
+        return SUBTYPE_REROUTE[sub][0], True
+    return role, False
+
+
+def unsupported(role: str, sub: str) -> str | None:
+    """Why a (role, subtype) pair has no protective policy (handled as DROP + unsupported_label review), else None."""
+    if role not in ROLES:
+        return f"unknown privacy_role {role!r}"
+    if sub not in TAXONOMY_SUBTYPES:
+        return f"subtype {sub!r} is not in the taxonomy"
+    role, _ = _route(role, sub)
+    if role == "quasi_identifier" and sub not in SUBTYPE_LADDERS and sub not in CATEGORICAL_QI:
+        return f"no generalisation ladder for quasi-identifier subtype {sub}"
+    if role == "sensitive_attribute" and sub != "DIAGNOSIS_CODE" and sub not in SUBTYPE_LADDERS \
+            and sub not in SENSITIVE_CATEGORICAL:
+        return f"no protective rule for sensitive subtype {sub}"
+    if role == "non_sensitive" and sub in NEVER_RAW:
+        return f"{sub} cannot be kept raw as non_sensitive"
+    return None
+
+
+def coverage(pairs) -> dict:
+    """Coverage of (role, subtype) pairs by the rule matrix; unsupported ones are listed, never KEEP."""
+    pairs = sorted({(str(r), str(s)) for r, s in pairs})
+    bad = [{"role": r, "subtype": s, "reason": why} for r, s in pairs if (why := unsupported(r, s))]
+    return {"pairs": len(pairs), "unsupported": bad}
 
 
 def candidates(label: dict, trust_level: str, required: bool, in_join: bool = False,
@@ -184,9 +228,16 @@ def candidates(label: dict, trust_level: str, required: bool, in_join: bool = Fa
     _check_trust(trust_level)
     role, sub = label["privacy_role"], label.get("subtype")
     notes = []
-    if sub in SUBTYPE_REROUTE and role not in SUBTYPE_REROUTE[sub][1]:
-        notes.append(f"{sub} labelled {role}: handled as {SUBTYPE_REROUTE[sub][0]}, review")
-        role = SUBTYPE_REROUTE[sub][0]
+    if role not in ROLES:
+        raise ValueError(f"unknown privacy_role {role!r}")
+    why = unsupported(role, sub)
+    if why:
+        return {"rungs": [{**DROP, "params": {}, "level": 0}], "needs_review": True, "escalate": None,
+                "notes": [f"unsupported_label: {why}"], "unsupported": why}
+    routed, moved = _route(role, sub)
+    if moved:
+        notes.append(f"{sub} labelled {role}: handled as {routed}, review")
+        role = routed
     low_conf = float(label.get("confidence", 0.0)) < REVIEW_BELOW
     k = DEFAULT_TARGETS[trust_level]["k"] if k is None else int(k)
     if k < 1:
@@ -211,7 +262,8 @@ def candidates(label: dict, trust_level: str, required: bool, in_join: bool = Fa
     if not rungs or low_conf or not (needed or precision is not None):
         rungs.append(DROP)
     rungs = [{**r, "params": dict(r["params"]), "level": i} for i, r in enumerate(rungs)]
-    return {"rungs": rungs, "needs_review": needs_review, "escalate": escalate, "notes": notes}
+    return {"rungs": rungs, "needs_review": needs_review, "escalate": escalate, "notes": notes, "unsupported": None,
+            "uncertain": low_conf}
 
 
 def _matches(rung: dict, allowed: dict) -> bool:

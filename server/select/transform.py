@@ -16,7 +16,21 @@ from server.actions import (  # noqa: F401  re-exported for older imports
     _blank, _fmt, _numeric, _rare, _time, apply_column, derive_age_band, execute, hmac_token, redact,
 )
 
-OK_STATUS = {"ready_for_transform", "target_unmet", "measured_ok"}
+UNAPPROVED_STATUS = {"policy_valid", "target_unmet", "budget_exhausted", "measured_ok"}  # need allow_unapproved
+UNAPPROVED_NOTICE = "NOT_APPROVED.txt"
+
+
+def release_gate(plan: dict, allow_unapproved: bool = False) -> dict:
+    """The one approval rule: only an approved measured_ok plan is a release. `blocked` never exports;
+    other statuses export only with allow_unapproved, and the gate is recorded in the output."""
+    status = plan.get("status")
+    approved = status == "measured_ok" and (plan.get("outcome") or {}).get("approved") is True
+    if not approved and (status not in UNAPPROVED_STATUS or not allow_unapproved):
+        raise ValueError(f"unapproved_plan: status {status!r} is not an approved measured_ok release"
+                         + ("; fix its errors first" if status not in UNAPPROVED_STATUS else
+                            "; pass allow_unapproved (--allow-unapproved) to export it anyway, recorded in the output"))
+    return {"status": status, "approved": approved, "allow_unapproved": allow_unapproved,
+            "plan_sha256": plan.get("plan_sha256")}
 
 
 def check_plan(tables: dict[str, pd.DataFrame], plan: dict) -> None:
@@ -47,16 +61,15 @@ def check_plan(tables: dict[str, pd.DataFrame], plan: dict) -> None:
 
 
 def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path | None = None,
-          eval_dir: Path | None = None) -> tuple[dict[str, pd.DataFrame], dict]:
+          eval_dir: Path | None = None, allow_unapproved: bool = False) -> tuple[dict[str, pd.DataFrame], dict]:
     """Protected tables (original names, retained column names, original row order) and per-column stats.
 
     Legacy, unvalidated layout: <out_dir>/<table>.csv and <eval_dir>/<table>.csv + rowmap_<table>.csv
-    (private: never publish). For an approved release use `python -m server.transform`."""
+    (private: never publish). For a validated release use `python -m server.transform`."""
     from server.transform.files import write_csv
     if not key:
         raise ValueError("an HMAC key is required (pass it from an environment variable)")
-    if plan.get("status") not in OK_STATUS:
-        raise ValueError(f"plan status {plan.get('status')!r} is not executable; fix its errors first")
+    gate = release_gate(plan, allow_unapproved)
     if not plan.get("release_id"):
         raise ValueError("plan needs a release_id (scenario/recipient) to scope pseudonyms")
     check_plan(tables, plan)
@@ -73,12 +86,15 @@ def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path
                 # positional ids match nothing in the scorer and would report false zero risk
                 raise ValueError(f"table {t} needs a record_key for its scoring row map")
     out, stats = execute(tables, plan, key)
-    stats = {"blanked": stats["blanked"], "rows": stats["rows"]}
+    stats = {"blanked": stats["blanked"], "rows": stats["rows"], "release_gate": gate}
     for d in (out_dir, eval_dir):
         if d is not None:
             Path(d).mkdir(parents=True)
             for t, df in out.items():
                 write_csv(df, Path(d) / f"{t}.csv")
+            if not gate["approved"]:
+                (Path(d) / UNAPPROVED_NOTICE).write_text(
+                    f"NOT AN APPROVED RELEASE: plan status {gate['status']}, exported with allow_unapproved.\n")
     if eval_dir is not None:
         for t in out:
             ids = tables[t][plan["tables"][t]["record_key"]].astype(str).values
