@@ -81,10 +81,18 @@ def _person_tables(labels: dict, relations: dict) -> set:
     return linked
 
 
+def _downgrade(old_role, old_subtype, role, subtype):
+    was_id = old_role in ID_ROLES or old_subtype in policy.ID_SUBTYPE_ROLE
+    is_id = role in ID_ROLES or subtype in policy.ID_SUBTYPE_ROLE
+    was_protected = old_role != "non_sensitive" or old_subtype in policy.SUBTYPE_REROUTE
+    is_unprotected = role == "non_sensitive" and subtype not in policy.SUBTYPE_REROUTE
+    return (was_id and not is_id) or (was_protected and is_unprotected)
+
+
 def confirm(labels: pd.DataFrame, confirmed: pd.DataFrame, allow_downgrade: bool = False) -> pd.DataFrame:
     """Apply reviewer-confirmed labels (table,column,privacy_role,subtype): confidence 1.0, the detected label kept.
 
-    Turning an identifier label (or an identifier subtype) into a non-identifier is refused unless allow_downgrade."""
+    Lowering identifier protection or making a protected label non-sensitive requires allow_downgrade."""
     need = {"table", "column", "privacy_role", "subtype"}
     if not need <= set(confirmed.columns):
         raise ValueError(f"confirmation file needs columns {sorted(need)}")
@@ -102,8 +110,7 @@ def confirm(labels: pd.DataFrame, confirmed: pd.DataFrame, allow_downgrade: bool
         if not m.any():
             raise ValueError(f"confirmed label for unknown column {ref}")
         old = out[m].iloc[0]
-        was_id = old.privacy_role in ID_ROLES or old.subtype in policy.ID_SUBTYPE_ROLE
-        if was_id and r["privacy_role"] not in ID_ROLES and not allow_downgrade:
+        if _downgrade(old.privacy_role, old.subtype, r["privacy_role"], r["subtype"]) and not allow_downgrade:
             raise ValueError(f"{ref}: refusing to downgrade {old.privacy_role}/{old.subtype} to {r['privacy_role']} "
                              "without allow_downgrade")
         out.loc[m, ["detected_role", "detected_subtype", "detected_confidence"]] = \
@@ -119,6 +126,11 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
     trust = requirements["trust_level"]
     tg = policy.targets(trust, requirements.get("targets") or None)
     lab = _labels_by_ref(labels)
+    for ref, l in lab.items():
+        if pd.notna(l.get("detected_role")) and _downgrade(l["detected_role"], l.get("detected_subtype"),
+                                                        l["privacy_role"], l["subtype"]):
+            warnings.append(f"{ref}: protection downgrade explicitly allowed from "
+                            f"{l['detected_role']}/{l.get('detected_subtype')} to {l['privacy_role']}/{l['subtype']}")
     columns = {t: list(df.columns) for t, df in tables.items()}
     exists = {_ref(t, c) for t, cs in columns.items() for c in cs}
 
@@ -139,7 +151,8 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
 
     # 2. joins -> shared token domains
     doms, join_refs = _Domains(), set()
-    warnings += [f"relations: {x}" for x in relations.get("conflicts", []) + relations.get("notices", [])]
+    errors += [f"relations: {x}" for x in relations.get("conflicts", [])]
+    warnings += [f"relations: {x}" for x in relations.get("notices", [])]
     trusted = [j for j in relations.get("joins", []) if j.get("coverage", 1.0) >= MIN_JOIN_COVERAGE]
     relations = {**relations, "joins": trusted}
     discovered = {frozenset((j["parent"], j["child"])) for j in trusted}

@@ -2,7 +2,9 @@
 import json
 
 import pandas as pd
+import pytest
 
+from privacy_tool.relations import discover
 from privacy_tool.select import confirm, render, select
 
 
@@ -135,7 +137,6 @@ def test_unconfirmed_same_name_join_does_not_share_domain():
 
 
 def test_confirm_refuses_identifier_downgrade_and_bad_files():
-    import pytest
     tables, labels, rel, req = inputs()
     down = pd.DataFrame([{"table": "visits", "column": "pid", "privacy_role": "non_sensitive", "subtype": "CATEGORY"}])
     with pytest.raises(ValueError, match="downgrade"):
@@ -145,6 +146,57 @@ def test_confirm_refuses_identifier_downgrade_and_bad_files():
         confirm(labels, pd.concat([down, down]), allow_downgrade=True)
     with pytest.raises(ValueError):
         confirm(labels, down.drop(columns="subtype"))
+
+
+@pytest.mark.parametrize("table,column", [("visits", "dob"), ("notes", "text"), ("visits", "pid")])
+def test_protection_downgrade_requires_permission_and_warns(table, column):
+    tables, labels, rel, req = inputs()
+    ref = f"{table}.{column}"
+    req["required"][ref] = ["U5"]
+    down = pd.DataFrame([{"table": table, "column": column, "privacy_role": "non_sensitive", "subtype": "CATEGORY"}])
+    with pytest.raises(ValueError, match="downgrade"):
+        confirm(labels, down)
+    fixed = confirm(labels, down, allow_downgrade=True)
+    plan = select(tables, fixed, rel, req)
+    assert plan["status"] == "ready_for_transform", plan["errors"]
+    assert by_ref(plan)[ref]["action"] == "KEEP"
+    assert any(ref in w and "downgrade explicitly allowed" in w for w in plan["warnings"])
+    assert "downgrade explicitly allowed" in render(plan)
+
+
+@pytest.mark.parametrize("table,column", [("visits", "dob"), ("notes", "text"), ("visits", "pid")])
+def test_retained_protected_subtype_is_not_a_downgrade(table, column):
+    tables, labels, rel, req = inputs()
+    ref = f"{table}.{column}"
+    req["required"][ref] = ["U5"]
+    m = (labels.table == table) & (labels.column == column)
+    unchanged = labels.loc[m, ["table", "column", "privacy_role", "subtype"]].copy()
+    unchanged["privacy_role"] = "non_sensitive"
+    fixed = confirm(labels, unchanged)
+    plan = select(tables, fixed, rel, req)
+    assert plan["status"] == "ready_for_transform", plan["errors"]
+    assert not any("downgrade" in w for w in plan["warnings"])
+    assert by_ref(plan)[ref]["action"] != "KEEP"
+    down = unchanged.assign(subtype="CATEGORY")
+    with pytest.raises(ValueError, match="downgrade"):
+        confirm(fixed, down)
+
+
+def test_discovered_relation_conflict_blocks_but_notice_only_warns():
+    tables = {t: pd.DataFrame({"id": [f"V{i:03}" for i in range(20)]}) for t in ("a", "b", "c")}
+    labels = pd.DataFrame([lab(t, "id", "record_key", "RECORD_ID", evidence="test") for t in tables])
+    rel = discover(tables, labels, {"joins": [["a.id", "c.id"]]})
+    assert rel["conflicts"]
+    rel["notices"].append("subject key was not declared")
+    req = {"source": "spec", "dataset": "d", "trust_level": "controlled_research",
+           "joins": [{"columns": ["a.id", "c.id"], "tasks": ["U1"], "kind": "declared"}]}
+    plan = select(tables, labels, rel, req)
+    assert plan["status"] == "blocked"
+    assert all(f"relations: {c}" in plan["errors"] for c in rel["conflicts"])
+    assert "relations: subject key was not declared" in plan["warnings"]
+    rel["conflicts"] = []
+    plan = select(tables, labels, rel, req)
+    assert plan["status"] == "ready_for_transform", plan["errors"]
 
 
 def test_low_coverage_join_not_trusted_and_same_subtype_ids_share_domain():

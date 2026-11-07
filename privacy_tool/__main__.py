@@ -93,7 +93,7 @@ def main(argv=None) -> int:
     s.add_argument("--declare-joins", action="store_true", help="treat requirement joins as declared")
     s.add_argument("--rows", type=int, default=20000, help="rows sampled for detection")
     s.add_argument("--confirm", help="CSV table,column,privacy_role,subtype of reviewer-confirmed labels")
-    s.add_argument("--allow-downgrade", action="store_true", help="let --confirm turn an identifier into a non-identifier")
+    s.add_argument("--allow-downgrade", action="store_true", help="let --confirm lower protection, with a plan warning")
     s.set_defaults(fn=cmd_select)
     t = sub.add_parser("transform", help="apply decisions.json")
     t.add_argument("--data", required=True)
