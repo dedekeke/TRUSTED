@@ -253,6 +253,9 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
             ref = _ref(c)
             if levels[ref] >= floors[ref]:
                 continue
+            # Without t, coarsening a sensitive value cannot raise k or l (only lower l): dominated, skip it.
+            if c.get('privacy_role') == 'sensitive_attribute' and 't' not in targets:
+                continue
             trial = {**levels, ref: levels[ref] + 1}
             candidate = evaluate(trial, 'greedy', changed_column=ref)
             if candidate is None:

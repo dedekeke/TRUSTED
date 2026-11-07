@@ -390,3 +390,18 @@ def test_search_cli_writes_decisions_and_diagnostics_without_export(tmp_path, mo
     assert measured['measured']['evaluations'] == 2
     assert {p.name for p in out.iterdir()} == {'decisions.json', 'decisions.md'}
     assert 'unresolved subject identity' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('t, tried', [(None, False), (0.0, True)])
+def test_greedy_skips_sensitive_steps_unless_t_is_a_target(t, tried):
+    tables, labels, rel, req = inputs(400)
+    labels.loc[labels.column == 'score', ['privacy_role', 'subtype']] = ['sensitive_attribute', 'MEASUREMENT']
+    req.update(source='spec', precision={}, required={'visits.arrival': ['HOUR'], 'visits.city': ['CITY'],
+                                                      'visits.score': ['SCORE']},
+               targets={'k': 50, 'l': 2, **({} if t is None else {'t': t})})
+    out = search(tables, select(tables, labels, rel, req), KEY)
+    greedy = [e['changed_column'] for e in out['search_trace'] if e['phase'] == 'greedy']
+    assert greedy and ('visits.score' in greedy) is tried
+    # the budget goes to quasi-identifier rungs: every allowed city rung is reached in combination
+    if not tried:
+        assert max(e['levels']['visits.city'] for e in out['search_trace'] if e['phase'] == 'greedy') == 3
