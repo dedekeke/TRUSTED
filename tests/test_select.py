@@ -128,6 +128,44 @@ def test_unconfirmed_same_name_join_does_not_share_domain():
     tables, labels, rel, req = inputs()
     rel["joins"] = []
     plan = select(tables, labels, rel, req)
-    c = by_ref(plan)
-    assert c["labs.vid"]["action"] == "DROP" or c["labs.vid"]["params"]["domain"] != c["visits.vid"]["params"]["domain"]
+    assert plan["status"] == "blocked" and any("relations found no join" in e for e in plan["errors"])
+    req["joins"][0]["columns"] = ["visits.arrival", "labs.ts"]  # non-identifier name match: warn, don't join
+    plan = select(tables, labels, rel, req)
     assert any("not treated as a join" in w for w in plan["warnings"])
+
+
+def test_confirm_refuses_identifier_downgrade_and_bad_files():
+    import pytest
+    tables, labels, rel, req = inputs()
+    down = pd.DataFrame([{"table": "visits", "column": "pid", "privacy_role": "non_sensitive", "subtype": "CATEGORY"}])
+    with pytest.raises(ValueError, match="downgrade"):
+        confirm(labels, down)
+    assert confirm(labels, down, allow_downgrade=True).set_index("column").loc["pid", "detected_role"] == "direct_identifier"
+    with pytest.raises(ValueError):
+        confirm(labels, pd.concat([down, down]), allow_downgrade=True)
+    with pytest.raises(ValueError):
+        confirm(labels, down.drop(columns="subtype"))
+
+
+def test_low_coverage_join_not_trusted_and_same_subtype_ids_share_domain():
+    tables, labels, rel, req = inputs()
+    rel["joins"][0]["coverage"] = 0.0
+    plan = select(tables, labels, rel, req)
+    assert plan["status"] == "blocked"
+    tables, labels, rel, req = inputs()
+    tables["visits"]["pid2"] = ["020290-902B", "010180-901A"]
+    labels = pd.concat([labels, pd.DataFrame([lab("visits", "pid2", "direct_identifier", "NATIONAL_ID")])], ignore_index=True)
+    req["required"]["visits.pid2"] = ["U5"]
+    req["required"]["visits.pid"] = ["U5"]
+    c = by_ref(select(tables, labels, rel, req))
+    assert c["visits.pid"]["params"]["domain"] == c["visits.pid2"]["params"]["domain"]
+
+
+def test_person_context_not_spread_to_unlinked_tables():
+    tables, labels, rel, req = inputs()
+    tables["weather"] = pd.DataFrame({"wid": ["W1", "W2"], "day": ["2025-01-01", "2025-01-02"]})
+    labels = pd.concat([labels, pd.DataFrame([lab("weather", "wid", "record_key", "RECORD_ID", evidence="t"),
+                                              lab("weather", "day", "non_sensitive", "DATE", evidence="t")])], ignore_index=True)
+    req["required"]["weather.day"] = ["U6"]
+    c = by_ref(select(tables, labels, rel, req))
+    assert c["weather.day"]["privacy_role"] == "non_sensitive"

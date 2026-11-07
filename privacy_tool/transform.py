@@ -157,6 +157,33 @@ def derive_age_band(df: pd.DataFrame, birth: str, event: str, width: int = 10, t
     return Pz.to_age_band(age.where(age >= 0), width=width, top=top).fillna("")
 
 
+def check_plan(tables: dict[str, pd.DataFrame], plan: dict) -> None:
+    """Re-validate a (possibly hand-edited) plan against its input and the rule matrix before executing it."""
+    from .policy import violations
+    from .select import fingerprint
+    if plan.get("input_fingerprint") and plan["input_fingerprint"] != fingerprint(tables):
+        raise ValueError("plan was made for different input (schema/row-count fingerprint mismatch)")
+    released = [t for t, d in plan["tables"].items() if d["action"] == "RELEASE"]
+    missing = [t for t in released if t not in tables]
+    if missing:
+        raise ValueError(f"plan releases tables missing from the input: {missing}")
+    planned = {(c["table"], c["column"]) for c in plan["columns"]}
+    for t in released:
+        extra = [c for c in tables[t].columns if (t, c) not in planned]
+        if extra:
+            raise ValueError(f"{t}: columns without a decision: {extra}")
+    bad = []
+    for c in plan["columns"]:
+        if c["action"] == "DROP":
+            continue
+        label = {"privacy_role": c.get("privacy_role"), "subtype": c.get("subtype"), "confidence": c.get("confidence")}
+        rung = {"action": c["action"], "method": c.get("method"), "params": c.get("params") or {}}
+        bad += [f"{c['table']}.{c['column']}: {v}" for v in violations(label, rung, plan["trust_level"],
+                                                                        k=plan.get("targets", {}).get("k"))]
+    if bad:
+        raise ValueError("plan violates the rule matrix: " + "; ".join(bad))
+
+
 def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path | None = None,
           eval_dir: Path | None = None) -> tuple[dict[str, pd.DataFrame], dict]:
     """Protected tables (original names, retained column names, original row order) and per-column stats.
@@ -169,6 +196,7 @@ def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path
         raise ValueError(f"plan status {plan.get('status')!r} is not executable; fix its errors first")
     if not plan.get("release_id"):
         raise ValueError("plan needs a release_id (scenario/recipient) to scope pseudonyms")
+    check_plan(tables, plan)
     for d in (out_dir, eval_dir):
         if d is not None and Path(d).exists():
             raise FileExistsError(f"refusing to write into existing {d}")

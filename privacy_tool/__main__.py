@@ -39,7 +39,7 @@ def cmd_select(a) -> int:
     dataset = Path(a.data).name
     labels = pd.concat([detect_table(df.head(a.rows), t, dataset) for t, df in tables.items()], ignore_index=True)
     if a.confirm:
-        labels = select.confirm(labels, pd.read_csv(a.confirm, dtype=str, keep_default_na=False))
+        labels = select.confirm(labels, pd.read_csv(a.confirm, dtype=str, keep_default_na=False), a.allow_downgrade)
     if a.scenario:
         root = find_package_root(Path(a.data))
         if root is None:
@@ -56,8 +56,9 @@ def cmd_select(a) -> int:
     labels.to_csv(out / "field_labels.csv", index=False)
     (out / "decisions.json").write_text(json.dumps(plan, indent=2, default=str))
     (out / "decisions.md").write_text(select.render(plan))
-    print(f"{plan['status']}: {sum(c['action'] != 'DROP' for c in plan['columns'])} columns released, "
-          f"{len(plan['errors'])} errors, {len(plan['review_queue'])} to review -> {out}")
+    n = sum(c["action"] != "DROP" for c in plan["columns"])
+    print(f"{plan['status']}: " + (f"{n} columns would be released, " if plan["status"] == "blocked" else f"{n} columns released, ")
+          + f"{len(plan['errors'])} errors, {len(plan['review_queue'])} to review -> {out}")
     for e in plan["errors"]:
         print("  error:", e)
     return 0 if plan["status"] != "blocked" else 2
@@ -92,6 +93,7 @@ def main(argv=None) -> int:
     s.add_argument("--declare-joins", action="store_true", help="treat requirement joins as declared")
     s.add_argument("--rows", type=int, default=20000, help="rows sampled for detection")
     s.add_argument("--confirm", help="CSV table,column,privacy_role,subtype of reviewer-confirmed labels")
+    s.add_argument("--allow-downgrade", action="store_true", help="let --confirm turn an identifier into a non-identifier")
     s.set_defaults(fn=cmd_select)
     t = sub.add_parser("transform", help="apply decisions.json")
     t.add_argument("--data", required=True)

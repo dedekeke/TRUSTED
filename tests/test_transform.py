@@ -7,8 +7,14 @@ from privacy_tool.transform import apply, apply_column, redact
 KEY = b"test-key-not-secret"
 
 
+ROLE = {"RECORD_ID": "record_key", "NATIONAL_ID": "direct_identifier", "BIRTH_DATE": "quasi_identifier",
+        "TIMESTAMP": "quasi_identifier", "DIAGNOSIS_CODE": "sensitive_attribute", "PERSON_NAME": "direct_identifier",
+        "FREE_TEXT": "free_text", "MEASUREMENT": "sensitive_attribute"}
+
+
 def col(table, column, action, method=None, subtype="", **params):
-    return {"table": table, "column": column, "action": action, "method": method, "subtype": subtype, "params": params}
+    return {"table": table, "column": column, "action": action, "method": method, "subtype": subtype, "params": params,
+            "privacy_role": ROLE.get(subtype, "non_sensitive"), "confidence": 0.95}
 
 
 def tables():
@@ -29,6 +35,7 @@ def plan():
     return {
         "release_id": "TEST-S1/recipient",
         "status": "ready_for_transform",
+        "trust_level": "controlled_research", "targets": {"k": 5},
         "tables": {"visits": {"action": "RELEASE", "record_key": "vid"}, "labs": {"action": "RELEASE", "record_key": "lab"},
                    "notes": {"action": "WITHHOLD"}},
         "columns": [
@@ -36,9 +43,9 @@ def plan():
             col("visits", "pid", "HMAC", "hmac_sha256", "NATIONAL_ID", domain="patient"),
             col("visits", "dob", "DROP", subtype="BIRTH_DATE"),
             col("visits", "arrival", "GENERALISE", "floor_hour", "TIMESTAMP"),
-            col("visits", "icd", "GENERALISE", "diagnosis_group", "DIAGNOSIS_CODE"),
+            col("visits", "icd", "GENERALISE", "diagnosis_group", "DIAGNOSIS_CODE", mapping="pets_eval.utility.health.diagnosis_group"),
             col("visits", "name", "DROP", subtype="PERSON_NAME"),
-            col("visits", "note", "REDACT", "redact_spans", "FREE_TEXT", profile="default"),
+            col("visits", "note", "REDACT", "redact_spans", "FREE_TEXT", profile="typed_placeholders"),
             col("labs", "lab", "DROP", subtype="RECORD_ID"),
             col("labs", "vid", "HMAC", "hmac_sha256", "RECORD_ID", domain="visit"),
             col("labs", "value", "KEEP", subtype="MEASUREMENT"),
@@ -170,3 +177,19 @@ def test_key_never_written(tmp_path):
 def test_redaction_addresses_daymonth_and_bad_checksum_ids():
     out = redact("Asuu Kangaspolku 6 A 1, 20100 Turku. Käynti 29.12. ja 010180-9999 tarkistettu")
     assert "Kangaspolku" not in out and "29.12." not in out and "010180-9999" not in out
+
+
+def test_hand_edited_plan_is_rechecked():
+    bad = plan()
+    for c in bad["columns"]:
+        if c["column"] == "pid":
+            c.update(action="KEEP", method=None, params={})
+    with pytest.raises(ValueError, match="rule matrix"):
+        apply(tables(), bad, KEY)
+    other = {**plan(), "input_fingerprint": "0" * 16}
+    with pytest.raises(ValueError, match="fingerprint"):
+        apply(tables(), other, KEY)
+    t = tables()
+    t["visits"]["new_col"] = "x"
+    with pytest.raises(ValueError, match="without a decision"):
+        apply(t, plan(), KEY)

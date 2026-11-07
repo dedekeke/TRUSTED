@@ -6,13 +6,27 @@ The plan never contains key material, raw values, identifier-to-token maps or ro
 """
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pandas as pd
 
 from . import policy
 from .detect import CONTEXT_QI
 
 POLICY_VERSION = "dynamic-1"
+DETECTOR_VERSION = "detect-1"
 EVENT_SUBTYPES = ("TIMESTAMP", "DATE")
+ROLES = {"direct_identifier", "quasi_identifier", "sensitive_attribute", "technical_identifier", "free_text",
+         "record_key", "non_sensitive"}
+ID_ROLES = {"direct_identifier", "technical_identifier", "record_key"}
+MIN_JOIN_COVERAGE = 0.95
+
+
+def fingerprint(tables: dict[str, pd.DataFrame]) -> str:
+    """Schema + row counts (no values): transform refuses a plan made for other input."""
+    shape = {t: [list(df.columns), len(df)] for t, df in sorted(tables.items())}
+    return hashlib.sha256(json.dumps(shape).encode()).hexdigest()[:16]
 
 
 def _ref(t, c):
@@ -67,15 +81,35 @@ def _person_tables(labels: dict, relations: dict) -> set:
     return linked
 
 
-def confirm(labels: pd.DataFrame, confirmed: pd.DataFrame) -> pd.DataFrame:
-    """Apply reviewer-confirmed labels (table,column,privacy_role,subtype): confidence 1.0, evidence recorded."""
+def confirm(labels: pd.DataFrame, confirmed: pd.DataFrame, allow_downgrade: bool = False) -> pd.DataFrame:
+    """Apply reviewer-confirmed labels (table,column,privacy_role,subtype): confidence 1.0, the detected label kept.
+
+    Turning an identifier label (or an identifier subtype) into a non-identifier is refused unless allow_downgrade."""
+    need = {"table", "column", "privacy_role", "subtype"}
+    if not need <= set(confirmed.columns):
+        raise ValueError(f"confirmation file needs columns {sorted(need)}")
+    if confirmed.duplicated(["table", "column"]).any():
+        raise ValueError("confirmation file lists a column twice")
     out = labels.copy()
+    for col in ("detected_role", "detected_subtype", "detected_confidence"):
+        if col not in out:
+            out[col] = None
     for r in confirmed.to_dict("records"):
+        ref = f"{r['table']}.{r['column']}"
+        if r["privacy_role"] not in ROLES or not str(r["subtype"]).strip():
+            raise ValueError(f"{ref}: invalid role/subtype {r['privacy_role']}/{r['subtype']}")
         m = (out.table == r["table"]) & (out.column == r["column"])
         if not m.any():
-            raise ValueError(f"confirmed label for unknown column {r['table']}.{r['column']}")
+            raise ValueError(f"confirmed label for unknown column {ref}")
+        old = out[m].iloc[0]
+        was_id = old.privacy_role in ID_ROLES or old.subtype in policy.ID_SUBTYPE_ROLE
+        if was_id and r["privacy_role"] not in ID_ROLES and not allow_downgrade:
+            raise ValueError(f"{ref}: refusing to downgrade {old.privacy_role}/{old.subtype} to {r['privacy_role']} "
+                             "without allow_downgrade")
+        out.loc[m, ["detected_role", "detected_subtype", "detected_confidence"]] = \
+            [old.privacy_role, old.subtype, old.confidence]
         out.loc[m, ["privacy_role", "subtype", "confidence", "evidence"]] = \
-            [r["privacy_role"], r["subtype"], 1.0, "confirmed by reviewer"]
+            [r["privacy_role"], r["subtype"], 1.0, f"confirmed by reviewer (detected {old.privacy_role}/{old.subtype})"]
     return out
 
 
@@ -105,17 +139,33 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
 
     # 2. joins -> shared token domains
     doms, join_refs = _Domains(), set()
-    discovered = {frozenset((j["parent"], j["child"])) for j in relations.get("joins", [])}
+    warnings += [f"relations: {x}" for x in relations.get("conflicts", []) + relations.get("notices", [])]
+    trusted = [j for j in relations.get("joins", []) if j.get("coverage", 1.0) >= MIN_JOIN_COVERAGE]
+    relations = {**relations, "joins": trusted}
+    discovered = {frozenset((j["parent"], j["child"])) for j in trusted}
     for j in requirements.get("joins") or []:
         a, b = j["columns"]
         if frozenset((a, b)) not in discovered:
+            ids = all(lab.get(x, {}).get("privacy_role") in ID_ROLES for x in (a, b))
+            if j.get("kind", "declared") == "same_name" and ids:  # the analysis needs a join the data doesn't support
+                errors.append(f"{a} = {b} is needed by {', '.join(j.get('tasks', []))} but relations found no join "
+                              f"with coverage >= {MIN_JOIN_COVERAGE}")
+                continue
             if j.get("kind", "declared") == "same_name":  # an unconfirmed name match must not widen a token domain
                 warnings.append(f"{a} = {b} share a name in {', '.join(j.get('tasks', []))} but relations found no "
                                 "join; not treated as a join")
                 continue
-            warnings.append(f"declared join {a} = {b} was not discovered; coverage is unverified")
+            errors.append(f"join {a} = {b} is required but was not found with coverage >= {MIN_JOIN_COVERAGE}")
+            continue
         doms.union(a, b)
         join_refs |= {a, b}
+
+    for t, cs in columns.items():  # e.g. from_iban/to_iban: the same account must get the same token
+        ids = [_ref(t, c) for c in cs if _ref(t, c) in required and lab.get(_ref(t, c), {}).get("privacy_role") in ID_ROLES]
+        for i, a in enumerate(ids):
+            for b in ids[i + 1:]:
+                if lab[a]["subtype"] == lab[b]["subtype"] and set(required[a]) & set(required[b]):
+                    doms.union(a, b)
 
     # 3. person context crosses joins: place/time in a table linked to people is a quasi-identifier
     people = _person_tables(lab, relations)
@@ -177,9 +227,12 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
             if cand["needs_review"]:
                 review.append({"column": ref, "confidence": l.get("confidence"), "evidence": l.get("evidence", "")})
             chosen = rungs[0]
-            why = (f"required by {', '.join(required[ref])}" if req else
-                   "join key" if in_join else "no declared analysis needs it (minimisation)")
+            why = (f"required by {', '.join(required[ref])}" if req else "join key" if in_join else
+                   "no declared analysis needs it (minimisation)" if rungs[0]["action"] == "DROP" else
+                   "non-sensitive; kept without a declared purpose")
             entry = {"table": t, "column": c, "privacy_role": l["privacy_role"], "subtype": l["subtype"],
+                     "detected": {"role": l.get("detected_role"), "subtype": l.get("detected_subtype")}
+                     if l.get("detected_role") else None,
                      "confidence": l.get("confidence"), "action": chosen["action"], "method": chosen["method"],
                      "params": dict(chosen["params"]), "level": chosen.get("level", 0), "rungs": rungs,
                      "required_by": required.get(ref, []), "needs_review": cand["needs_review"],
@@ -190,13 +243,20 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
                 if not events:
                     errors.append(f"{ref}: no event date in {t} to derive age at")
                     continue
-                name = "age" if "age" not in columns[t] else f"{c}_age"
+                taken = set(columns[t]) | {d["column"] for d in derived if d["table"] == t}
+                name = "age" if "age" not in taken else f"{c}_age"
                 derived.append({"table": t, "column": name, "sources": [c, events[0]], "method": chosen["method"],
                                 "params": dict(chosen["params"]), "rungs": rungs, "required_by": required.get(ref, []),
                                 "reason": f"age at {events[0]} from {c}, before both are generalised or dropped"})
                 entry.update(action="DROP", method=None, params={},
                              reason=entry["reason"] + f"; dropped after deriving {name}")
             plan_cols.append(entry)
+
+    for t, td in plan_tables.items():  # a released table with nothing left to release is withheld
+        if td["action"] == "RELEASE" and not any(c["table"] == t and c["action"] != "DROP" for c in plan_cols) \
+                and not any(d["table"] == t for d in derived):
+            plan_tables[t] = {"action": "WITHHOLD", "record_key": None, "reason": "no column is releasable"}
+    plan_cols = [c for c in plan_cols if plan_tables[c["table"]]["action"] == "RELEASE"]
 
     domains = {}
     for c in plan_cols:
@@ -214,8 +274,11 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
         errors += [f"{c['table']}.{c['column']}: {b}" for b in bad]
 
     scope = requirements.get("scenario") or requirements.get("dataset") or "release"
+    if not release_id:
+        warnings.append("no release_id given: tokens are scoped to scenario/trust only; pass one per recipient")
     return {
-        "policy_version": POLICY_VERSION,
+        "policy_version": POLICY_VERSION, "detector_version": DETECTOR_VERSION,
+        "input_fingerprint": fingerprint(tables),
         "release_id": release_id or f"{scope}/{trust}",
         "status": "blocked" if errors else "ready_for_transform",
         "source": requirements.get("source"), "scenario": requirements.get("scenario"),
