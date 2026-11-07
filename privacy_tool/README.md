@@ -13,7 +13,7 @@ Tables are `dict[str, pandas.DataFrame]` read with `dtype=str, keep_default_na=F
 |---|---|---|
 | `detect` | `detect_table(df, table, dataset="")` | DataFrame `dataset,table,column,privacy_role,subtype,confidence,evidence` (taxonomy vocabulary); `review_queue(labels)` = rows with confidence < 0.6 |
 | `relations` | `discover(tables, labels=None, declared=None)` | `{"keys": [{"column", "unique_ratio", "null_rate"}], "joins": [{"parent", "child", "coverage", "orphans", "confidence"[, "declared"]}], "subject_keys": {table: "t.c"}, "subject_key": "t.c" or None, "conflicts": [str]}`; `declared = {"joins": [[parent, child]], "subject_key": "t.c"}` overrides discovery |
-| `requirements` | `from_scenario(scenario_id, tables, root)`, `from_spec(path)`, `no_purpose()` | `{"source", "scenario", "trust_level", "targets", "tasks": [{"id", "columns", "evidence"}], "required": {"t.c": [task ids]}, "joins": [...], "subject_key"}` |
+| `requirements` | `from_scenario(scenario_id, tables, root, probe=True, tolerance=0.05)`, `from_spec(path)`, `no_purpose(trust_level, dataset)` | `{"source", "scenario", "dataset", "trust_level", "targets", "targets_text", "tasks": [{"id", "table", "columns", "any_of", "precision", "evidence"}], "required": {"t.c": [task ids]}, "any_of": [[alternatives]], "precision": {"t.c": "hour"}, "joins": [{"columns", "tasks"}], "subject_key", "warnings"}`; an alternative needing several columns is `"t.a+t.b"` |
 | `policy` | `candidates(label, trust_level, required, in_join)`, `targets(trust_level)` | Ordered rungs (finest first) `{"action", "method", "params"}`; hard-constraint checks |
 | `select` | `select(tables, labels, relations, requirements)` | Plan dict (`decisions.json`), status `ready_for_transform` or `blocked` |
 | `transform` | `apply(tables, plan, key, out_dir)` | Protected tables + private row maps in a fresh directory |
@@ -28,3 +28,13 @@ pets-eval detect --pred labels.csv   # scoring only; the detector never reads fi
 
 Development score on the 9 shipped datasets (475 fields): macro-F1 0.809, direct-identifier precision/recall 0.922 / 0.934
 (B1 rule baseline: 0.646 / 0.895).
+
+## Requirements
+
+```python
+from privacy_tool.requirements import from_scenario, from_spec, no_purpose
+req = from_scenario("HEALTH-S1", load_tables(root / "data/health"), root)  # parse task needs + probe by dropping columns
+req = from_spec("privacy_tool/examples/health_s1_spec.json")               # new dataset without toolkit tasks
+```
+
+Probing HEALTH-S1 (5 tasks, every column of the tables each task touches, all rows, no sampling) took 33 s on an idle machine and 374 s under heavy load (load average 9.5).
