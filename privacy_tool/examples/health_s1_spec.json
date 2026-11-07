@@ -1,0 +1,23 @@
+{
+  "dataset": "health",
+  "trust_level": "controlled_research",
+  "targets": {"k": 5},
+  "required": [
+    {"column": "ed_visits.triage", "task": "los_by_triage"},
+    {"column": "ed_visits.municipality", "task": "diagnosis_mix"},
+    {"column": "ed_visits.icd10_primary", "task": "diagnosis_mix"},
+    {"column": "ed_visits.date_of_birth", "task": "revisits"},
+    {"column": "ed_visits.arrival_ts", "precision": "hour", "task": "hour_curve"},
+    {"column": "ed_visits.visit_id", "task": "crp_temperature"},
+    {"column": "ed_visits.temp_c", "task": "crp_temperature"},
+    {"column": "lab_results.visit_id", "task": "crp_temperature"},
+    {"column": "lab_results.test_code", "task": "crp_temperature"},
+    {"column": "lab_results.value", "task": "crp_temperature"}
+  ],
+  "any_of": [
+    [["ed_visits.los_minutes"], ["ed_visits.arrival_ts", "ed_visits.discharge_ts"]],
+    [["ed_visits.readmit_30d"], ["ed_visits.patient_hetu"]]
+  ],
+  "joins": [["lab_results.visit_id", "ed_visits.visit_id"]],
+  "subject_key": "ed_visits.patient_hetu"
+}
