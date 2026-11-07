@@ -141,3 +141,42 @@ def test_missing_hmac_key_is_named(server, monkeypatch):
 def test_baselines_endpoint(server, root):  # noqa: F811
     body = call(server, "/api/baselines?dataset=demo&scenario=DEMO-S1")[1]
     assert body["dataset"] == "demo" and body["baselines"] == []
+
+
+def upload_demo(base, root, name="demo"):  # noqa: F811
+    jid = call(base, "/api/jobs", {"upload": name})[1]["id"]
+    for f in sorted((root / "data" / "demo").glob("*.csv")):
+        urllib.request.urlopen(urllib.request.Request(f"{base}/api/jobs/{jid}/files/{f.name}", data=f.read_bytes(),
+                                                      method="PUT")).read()
+    return jid
+
+
+@pytest.fixture
+def outside_server(root, tmp_path_factory):  # noqa: F811
+    """Runs folder outside the package, as in real use: uploaded files cannot find the package by walking up."""
+    import threading
+    runs = tmp_path_factory.mktemp("elsewhere") / "runs"
+    httpd = server_api.serve(server_api.Api(root, root / "model", runs, detect=fake_detect), 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{httpd.server_port}"
+    httpd.shutdown()
+
+
+def test_uploaded_data_with_a_bundled_scenario_finds_the_package(outside_server, root, monkeypatch):  # noqa: F811
+    monkeypatch.delenv("PETS_ROOT", raising=False)
+    jid = upload_demo(outside_server, root)
+    call(outside_server, f"/api/jobs/{jid}/start", {"scenario": "DEMO-S1", "no_scorecard": True})
+    st = wait(outside_server, jid)
+    assert steps(st)["select"] == "success", st
+    assert "PETS_ROOT" not in __import__("os").environ          # restored after the job
+
+
+def test_select_rejection_is_reported_with_its_reason(outside_server, root, monkeypatch):  # noqa: F811
+    import server.jobs as jobs_mod
+    monkeypatch.setattr(jobs_mod, "_package_root", lambda r: __import__("contextlib").nullcontext())
+    monkeypatch.delenv("PETS_ROOT", raising=False)
+    jid = upload_demo(outside_server, root)
+    call(outside_server, f"/api/jobs/{jid}/start", {"scenario": "DEMO-S1", "no_scorecard": True})
+    sel = next(s for s in wait(outside_server, jid)["steps"] if s["name"] == "select")
+    assert sel["status"] == "failed" and "TypeError" not in (sel["error"] or "")
+    assert "cannot find the challenge package root" in sel["error"]
