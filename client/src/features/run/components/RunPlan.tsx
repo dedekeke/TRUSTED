@@ -141,7 +141,7 @@ export default function RunPlan() {
               type="primary"
               icon={<SearchOutlined />}
               loading={busy === 'search'}
-              disabled={!run?.steps.select || run.steps.search || !!busy}
+              disabled={!run?.select || run.select.status === 'blocked' || run.steps.search || !!busy}
               onClick={() => act('search', () => backend.search(runId, budget))}
             >
               Search
