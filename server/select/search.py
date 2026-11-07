@@ -29,8 +29,9 @@ def _subject_col(plan, table):
 
 
 class _Evaluator:
-    def __init__(self, tables, plan, key, tasks, orig):
+    def __init__(self, tables, plan, key, tasks, orig, spans=None):
         self.tables, self.plan, self.key, self.tasks, self.orig = tables, plan, key, tasks or [], orig
+        self.spans = spans or {}  # validated Detect spans per free-text column: previews redact as the export will
         self.cache = {}
         self.metric_cache = {}
         self.subjects = {}
@@ -53,7 +54,8 @@ class _Evaluator:
                         value = T.derive_age_band(self.tables[table], *c['sources'], **rung['params'])
                     else:
                         value = T.apply_column(self.tables[table][c['column']], {**c, **rung}, self.key,
-                                               self.plan['release_id'], self.tables[table], self.plan['columns'])[0]
+                                               self.plan['release_id'], self.tables[table], self.plan['columns'],
+                                               self.spans.get(_ref(c)) if c.get('action') == 'REDACT' else None)[0]
                     self.cache[cache_key] = value
                 if self.cache[cache_key] is not None:
                     res[c['column']] = self.cache[cache_key]
@@ -194,7 +196,7 @@ def _outcome(plan, current, failed, tau, base, budget, used, unexplored):
             'targets': {**targets, 'tau': tau}, 'achieved': achieved, 'violations': violations}
 
 
-def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
+def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8, spans=None):
     """Return chosen plan, measured results, requirement floors and every evaluated candidate."""
     if isinstance(budget, bool) or not isinstance(budget, int) or not 1 <= budget <= 50:
         raise ValueError('budget must be an integer from 1 to 50')
@@ -214,7 +216,7 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
     T.check_plan(tables, plan)
     if plan['status'] == 'blocked':
         raise ValueError('cannot search a blocked plan')
-    ev = _Evaluator(tables, plan, key, tasks, orig if orig is not None else tables)
+    ev = _Evaluator(tables, plan, key, tasks, orig if orig is not None else tables, spans)
     items = _items(plan)
     levels = {_ref(c): 0 for c in items}
     floors = {_ref(c): 0 for c in items}
@@ -404,7 +406,8 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
                        'method': 'pets_eval.privacy; distinct subject/class; distinct subject/class/value for l/t',
                        'chosen_evaluation': current['evaluation'],
                        't_measurement': 'every candidate when t is a target; otherwise chosen plan only',
-                       'requirement_floors': floors}
+                       'requirement_floors': floors,
+                       'text_redaction': 'detect_spans' if spans else 'rules_only'}
     out['search_trace'] = trace
     out['outcome'] = _outcome(out, current, failures(current), tau, base, budget, len(trace), unexplored)
     if 'provenance_unbound' in out['outcome']['issues']:

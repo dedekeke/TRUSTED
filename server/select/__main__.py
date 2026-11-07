@@ -111,9 +111,19 @@ def cmd_search(a) -> int:
         tasks = [t for t in all_tasks([plan["dataset"]]) if t.id in ids]
         orig = load_tables(a.data)
     tables = read_tables(a.data)
+    spans = None
+    if a.detect:  # measure free text exactly as the export will redact it (same loader and checks as transform)
+        from server.transform import spans as span_io
+        try:
+            detect, by_ref = span_io.load(a.detect, a.data, plan)
+            redact = {f"{c['table']}.{c['column']}" for c in plan["columns"] if c["action"] == "REDACT"}
+            spans = span_io.align(detect, by_ref, tables, redact)
+        except artifacts.ArtifactError as e:
+            print(f"rejected: {e}", file=sys.stderr)
+            return EXIT["blocked"]
     try:
         preview.check_plan(tables, plan)
-        res = search.search(tables, plan, key, tasks, orig, budget=a.budget, tau=a.tau)
+        res = search.search(tables, plan, key, tasks, orig, budget=a.budget, tau=a.tau, spans=spans)
     except ValueError as e:
         print(f"blocked: {e}", file=sys.stderr)
         return EXIT["blocked"]
@@ -173,6 +183,7 @@ def main(argv=None) -> int:
     q.add_argument("--out", required=True)
     q.add_argument("--budget", type=int, default=50)
     q.add_argument("--tau", type=float, default=0.8, help="minimum task score as a share of its unsearched score")
+    q.add_argument("--detect", help="detect output dir: previews redact free text with its spans, as transform will")
     q.set_defaults(fn=cmd_search)
     t = sub.add_parser("transform", help="export a validated release (same as python -m server.transform)")
     t.add_argument("--data", required=True)

@@ -15,6 +15,7 @@ from server.select.search import _Evaluator, search
 from server.select.select import select
 from server.transform import validate
 from server.transform.files import read_csv, write_csv
+from server.transform import spans as span_io
 from server.transform.run import read_tables, run
 from tests.contract_fixture import fingerprint, span, write_detect_dir
 
@@ -78,7 +79,15 @@ def bound_plan(root, tables, labels, rel, req, spans=True, release_id="demo/reci
     read = read_tables(data)
     plan = select(read, labels, rel, req, release_id=release_id)
     plan["provenance"] = A.provenance(data, manifest)
-    return data, root / "detect", search(read, plan, KEY, **search_kw)
+    return data, root / "detect", search(read, plan, KEY, spans=detect_spans(root / "detect", data, plan),
+                                         **search_kw)
+
+
+def detect_spans(detect, data, plan):
+    """What `search --detect` loads: validated spans for the released free-text columns."""
+    detect_m, by_ref = span_io.load(detect, data, plan)
+    redact = {f"{c['table']}.{c['column']}" for c in plan["columns"] if c["action"] == "REDACT"}
+    return span_io.align(detect_m, by_ref, read_tables(data), redact)
 
 
 @pytest.fixture(scope="module")
@@ -186,11 +195,20 @@ def test_release_id_must_be_explicit(tmp_path, measured):
 
 
 def test_free_text_needs_detect_spans_or_explicit_rule_fallback(tmp_path, measured):
-    res, _ = release(tmp_path, measured, detect_dir=None)
+    _, _, plan = measured
+    rules_plan = {**plan, "measured": {**plan["measured"], "text_redaction": "rules_only"}}
+    res, _ = release(tmp_path, measured, rules_plan, detect_dir=None)
     assert res["status"] == "refused" and any("--text-fallback rules" in e for e in res["errors"])
-    res, out = release(tmp_path / "b", measured, detect_dir=None, text_fallback=True)
+    res, out = release(tmp_path / "b", measured, rules_plan, detect_dir=None, text_fallback=True)
     assert res["status"] == "validated"
     assert json.loads((out / "transform_stats.json").read_text())["redaction"] == {"visits.note": "rules_only"}
+
+
+def test_export_must_redact_free_text_the_way_search_measured_it(tmp_path, measured):
+    _, _, plan = measured
+    assert plan["measured"]["text_redaction"] == "detect_spans"
+    res, _ = release(tmp_path, measured, detect_dir=None, text_fallback=True)  # measured with spans, export without
+    assert res["status"] == "refused" and any("measured with detect_spans" in e for e in res["errors"])
 
 
 @pytest.mark.parametrize("breakage,code", [("offsets", "stale_span"), ("span_id", "stale_span"),
@@ -374,7 +392,7 @@ def test_internal_release_uses_numbered_pseudonyms_per_patient(tmp_path):
     lab_path = write_detect_dir(tmp_path / "detect", data, labels, spans)
     plan = select(read, labels, rel, req, release_id="demo/vendor")
     plan["provenance"] = A.provenance(data, A.load_manifest(lab_path, data, "demo"))
-    plan = search(read, plan, KEY)
+    plan = search(read, plan, KEY, spans=detect_spans(tmp_path / "detect", data, plan))
     note = next(c for c in plan["columns"] if c["column"] == "note")
     assert note["params"]["profile"] == "entity_pseudonyms" and plan["outcome"]["approved"], plan.get("conflict")
     res = run(data, plan, KEY, tmp_path / "run", tmp_path / "detect", scorecard=False)

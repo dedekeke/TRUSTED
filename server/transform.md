@@ -1,9 +1,9 @@
 # Final stage plan: Transform and format the output
 
 **Status: implemented** in `server/transform/` with shared operations in `server/actions.py`; tests are in
-`tests/test_transform_stage.py`. Two deviations from this plan: consistent entity pseudonyms for free text are
-not implemented, because the policy matrix offers only `redact_spans` with typed placeholders; and the
-scorecard is report-only, not a release gate. Detect and measured selection are already connected.
+`tests/test_transform_stage.py`. Spans come from a Detect output dir (`--detect`, contract v1). Entity-consistent
+pseudonyms (`redact_spans` profile `entity_pseudonyms`) are used at internal/contractual trust. One deviation
+from this plan: the scorecard is report-only, not a release gate.
 This stage turns a final selection into validated, consistently formatted artifacts. It must not change
 the selected protections or claim privacy success for an unmet plan. Operational instructions belong in
 the central [README](../README.md); integration gaps are recorded in [combination.md](../combination.md).

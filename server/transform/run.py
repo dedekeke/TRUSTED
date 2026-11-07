@@ -189,6 +189,11 @@ def run(data_dir, plan: dict, key: bytes, out_dir, detect_dir=None, text_fallbac
     out_root.mkdir(parents=True, exist_ok=False)  # exclusive reservation of a fresh run directory
 
     errors = preflight(tables, plan, key, spans, text_fallback, allow_unapproved)
+    measured_text = (plan.get("measured") or {}).get("text_redaction")
+    used_text = "detect_spans" if spans else "rules_only"
+    if redact_refs and measured_text and measured_text != used_text:
+        errors.append(f"free text was measured with {measured_text} redaction but would be exported with {used_text}; "
+                      "run search and transform with the same --detect dir (or both without it)")
     gate = None
     if not errors:
         gate = release_gate(plan, allow_unapproved)

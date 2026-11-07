@@ -12,6 +12,7 @@ server/
   select/       selection modules directly in this directory; no privacy_tool layer
   transform/    final stage: release gate, staged export, serialized validation and reports
   actions.py    shared pure protection operations (selection previews and final export run the same code)
+  pipeline.py   one command: detect infer -> select -> search -> transform (python -m server.pipeline)
   transform.md  implementation and output-formatting plan for the final stage
 ```
 
@@ -233,7 +234,19 @@ PRIVACY_TOOL_HMAC_KEY=... python -m server.transform --data <package-root>/data/
   [--detect <detect-out-dir>] [--text-fallback rules] [--allow-unapproved] [--no-scorecard]
 ```
 
-`python -m server.select transform` takes the same options and calls the same executor.
+`python -m server.select transform` takes the same options and calls the same executor. The whole chain runs
+with one command (each stage through its own CLI, into `detect/`, `select/`, `search/`, `transform/`):
+
+```bash
+PRIVACY_TOOL_HMAC_KEY=... python -m server.pipeline --data <package-root>/data/customer_service \
+  --scenario CS-S1 --model <detect model dir> --release-id CS-S1/vendor-a --out <fresh dir>
+```
+
+Free text uses the Detect spans: at internal/contractual trust the `entity_pseudonyms` profile writes
+`[PERSON_1]`, `[PHONE_2]`, ... numbered per conversation (a person keeps one number across turns; numbers
+restart in the next conversation, so they do not link records); otherwise `[PERSON]`. Run `search` with the same
+`--detect` dir (the pipeline does): previews then redact exactly as the export, and Transform refuses a plan
+measured with different text redaction.
 
 | Exit | Status | Result |
 |---|---|---|

@@ -82,7 +82,7 @@ def run(a) -> int:
         return save(code)
 
     code = _call(select_main, ["search", "--data", a.data, "--plan", str(out / "select" / "decisions.json"),
-                               "--out", str(out / "search"), "--budget", str(a.budget)])
+                               "--out", str(out / "search"), "--budget", str(a.budget), "--detect", str(out / "detect")])
     st = _status(out / "search" / "decisions.json")
     record["stages"]["search"] = {"exit": code, **st}
     if not st.get("approved") and not a.allow_unapproved:
