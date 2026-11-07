@@ -132,7 +132,7 @@ From this repository root, using an explained Detect label artifact:
 
 ```bash
 python -m server.select select --data <package-root>/data/health --scenario HEALTH-S1 \
-  --labels <explained-detect-labels.csv> --out <fresh-plan-dir>
+  --labels <detect-out>/labels.csv --out <fresh-plan-dir>   # needs <detect-out>/manifest.json
 PRIVACY_TOOL_HMAC_KEY=... python -m server.select search --data <package-root>/data/health \
   --plan <fresh-plan-dir>/decisions.json --budget 50 --out <fresh-search-dir>
 ```
@@ -155,10 +155,28 @@ must be fresh. The key is supplied by `PRIVACY_TOOL_HMAC_KEY`, never stored in d
 
 | Status | Meaning | CLI exit |
 |---|---|---|
-| `ready_for_transform` | Initial policy-valid plan; privacy success unmeasured | 0 from select |
-| `blocked` | Named input, policy or required-label conflicts | 2 |
-| `measured_ok` | Measured candidate meets configured risk and utility targets | 0 from search |
-| `target_unmet` | Best measured candidate plus explicit conflicts/budget stop | 3 |
+| `policy_valid` | Initial plan within the rule matrix; privacy targets unmeasured; **not** an approved release | 0 from select |
+| `blocked` | Named input, policy, review, span or linkage conflicts (or a rejected artifact, nothing written) | 2 |
+| `measured_ok` | Measured candidate meets risk and utility targets; the only status with `outcome.approved: true` | 0 from search |
+| `target_unmet` | Search covered its allowed candidate space and no candidate meets the targets | 3 |
+| `budget_exhausted` | Budget ran out with unexplored candidates; never a claim of infeasibility | 4 |
+
+Every plan carries `outcome` = `{policy_valid, targets_met, approved, budget: {used, limit, exhausted, unexplored},
+targets, achieved, violations: [{metric, table, target, achieved, requirements}]}`.
+
+Named issue codes. Rejections (exit 2, no output): `manifest_missing`, `manifest_schema`, `dataset_mismatch`,
+`table_set_mismatch`, `input_mismatch` (names the table; one changed cell is enough), `fingerprint_mismatch`,
+`labels_mismatch`, `artifact_mismatch`, `artifact_missing`, `provenance_missing` (search). Plan errors/warnings:
+`unsupported_label`, `review_required`, `stale_span`, `missing_span_evidence`, `ambiguous_join`,
+`ambiguous_subject` (warning; selection keeps its own subject resolution).
+
+`select --labels <detect out>/labels.csv` requires the contract-v1 `manifest.json` next to it (or `--manifest`):
+raw-byte sha256 of every input CSV, the labels/spans/linkage digests and the label vocabulary. `decisions.json`
+gets `provenance` (input digests, dataset fingerprint, detector name/version/model digest, artifact digests,
+`confirm_sha256`) and `evidence` (span/linkage counts and relation ids only). `search` recomputes the input
+digests, rejects a plan made for other bytes and records `plan_sha256`. Without `--labels` the legacy detector
+plan is marked `provenance.bound: false`. `--confirm` rows are recorded as `reviews` (detected vs confirmed,
+`downgrade`); a required column whose label is uncertain and unconfirmed blocks with `review_required`.
 
 Search probes requirement floors at τ=0.8, then greedily coarsens one rung at a time, with deterministic
 ties and local suppression allowance ≤2%. At most 50 search evaluations are counted, including the utility
@@ -180,7 +198,7 @@ Tables are `dict[str, pandas.DataFrame]` read with `dtype=str, keep_default_na=F
 | `relations` | `discover(tables, labels=None, declared=None)` | `{"keys": [{"column", "unique_ratio", "null_rate"}], "joins": [{"parent", "child", "coverage", "orphans", "confidence"[, "declared"]}], "subject_keys": {table: "t.c"}, "subject_paths": {table: ["t.c", ...]}, "subject_key": "t.c" or None, "conflicts": [str], "notices": [str]}`. `subject_keys[t]` is the person column, possibly in a joined table (`subject_paths[t]` = child, parent, ..., subject). A table whose own key is a person id (one row per person) uses that key. Subject keys need labels: without them `subject_keys` is empty and `notices` says so. `declared = {"joins": [[parent, child]], "subject_key": "t.c"}` overrides discovery; problems go to `conflicts` |
 | `requirements` | `from_scenario(scenario_id, tables, root, probe=True, tolerance=0.05)`, `from_spec(path)`, `no_purpose(trust_level, dataset)` | `{"source", "scenario", "dataset", "trust_level", "targets", "targets_text", "tasks": [{"id", "table", "columns", "any_of", "precision", "evidence": {"declared", "parsed", "probed"}}], "required": {"t.c": [task ids]}, "any_of": [[["t.a"], ["t.b", "t.c"]]] (groups of alternatives, each a list of refs all needed), "precision": {"t.c": "hour"}, "joins": [{"columns", "tasks", "kind": "same_name" or "declared"}], "subject_key", "warnings"}`; select must confirm `same_name` joins with `relations.discover` before forcing a shared key domain |
 | `policy` | `candidates(label, trust_level, required, in_join=False, precision=None, k=None)`, `targets(trust_level, scenario_targets=None)`, `violations(label, rung, trust_level, k=None)` | `{"rungs": [{"action", "method", "params", "level"}] finest first, "needs_review", "escalate", "notes"}`; targets `{"k", "l"?, "free_text"?, "max_suppression", "notes"}` (notes list any loosening by the scenario); violations = breaches, accepting only DROP or a rung `candidates` offers. `METHODS` = operations `transform` must implement |
-| `select` | `select(tables, labels, relations, requirements, release_id=None)`, `confirm(labels, confirmed)`, `render(plan)` | Plan dict (`decisions.json`): `tables` (RELEASE/WITHHOLD + record_key), one `columns` entry per released source column (chosen rung + all `rungs`), `derived`, `domains`, `review_queue`, `warnings`, `errors`; status `ready_for_transform` or `blocked` |
+| `select` | `select(tables, labels, relations, requirements, release_id=None)`, `confirm(labels, confirmed)`, `render(plan)` | Plan dict (`decisions.json`): `tables` (RELEASE/WITHHOLD + record_key), one `columns` entry per released source column (chosen rung + all `rungs`), `derived`, `domains`, `review_queue`, `warnings`, `errors`; `reviews`, `label_coverage`, `outcome`; status `policy_valid` or `blocked` |
 | `transform` | `apply(tables, plan, key, out_dir)` | Protected tables + private row maps in a fresh directory |
 | `search` | `search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8)` | Plan with chosen rungs, measured results and trace |
 

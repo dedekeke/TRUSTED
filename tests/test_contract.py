@@ -223,7 +223,18 @@ def test_unsupported_vocabulary_pair_is_named(tmp_path):
     p = plan(tmp_path)
     assert [(u['role'], u['subtype']) for u in p['label_coverage']['vocabulary']['unsupported']] == \
         [('non_sensitive', 'SECRET'), ('sensitive_attribute', 'URL')]
-    assert sum(w.startswith('unsupported_label') for w in p['warnings']) == 2
+    assert any(w.startswith('unsupported_label: 2 of 3') for w in p['warnings'])
+
+
+def test_suggested_subject_is_reported_not_adopted(tmp_path):
+    data = write_data(tmp_path)
+    subject = {'relation_id': 's1', 'kind': 'subject', 'left': {'table': 'people', 'column': 'score'}, 'right': None,
+               'evidence': {}, 'confidence': .5, 'needs_review': True}
+    lab = write_detect_dir(tmp_path / 'detect', data, labels(), [note_span(data)], [subject])
+    assert run_select(tmp_path, data, lab) == 0
+    p = plan(tmp_path)
+    assert any(w.startswith('ambiguous_subject: detect relation s1') for w in p['warnings'])
+    assert 'people.score' not in p['subject_keys'].values() and p['evidence']['linkage']['subjects'] == 1
 
 
 def test_required_unsupported_label_blocks(tmp_path):

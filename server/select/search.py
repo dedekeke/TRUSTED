@@ -326,7 +326,8 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
             break
     if not met(current) and not stalled:
         unexplored += sum((tuple(sorted({**levels, _ref(c): levels[_ref(c)] + 1}.items())), ()) not in cache
-                          for c in items if levels[_ref(c)] < floors[_ref(c)])
+                          for c in items if levels[_ref(c)] < floors[_ref(c)] and
+                          (c.get('privacy_role') != 'sensitive_attribute' or 't' in targets))
     suppression = {}
     if not met(current) and len(trace) >= budget:
         unexplored += 1  # local suppression not tried

@@ -188,6 +188,15 @@ def check_evidence(plan: dict, tables: dict, labels, manifest: dict) -> tuple[li
             (errors if {a, b} & (plan_join | released) else warnings).append(
                 f"ambiguous_join: detect relation {r.get('relation_id')} ({a} -> {b}) is under review, "
                 "conflicting or not confirmed by selection's joins")
+    ours_subjects = set((plan.get("subject_keys") or {}).values())
+    for r in relations:
+        if r.get("kind") != "subject" or not isinstance(r.get("left"), dict):
+            continue
+        ref = f"{r['left'].get('table')}.{r['left'].get('column')}"
+        if ref not in ours_subjects:  # selection keeps its own subject resolution; never adopt the suggestion
+            ambiguous.add(r.get("relation_id"))
+            warnings.append(f"ambiguous_subject: detect relation {r.get('relation_id')} suggests {ref} as a subject "
+                            f"key; selection resolved {sorted(ours_subjects) or 'none'} and does not adopt it")
     summary = {"spans": {"count": sum(by_column.values()), "by_column": by_column, "stale": len(stale)},
                "linkage": {"relations": len(relations), "joins": len(joins),
                            "subjects": sum(r.get("kind") == "subject" for r in relations),

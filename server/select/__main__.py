@@ -75,8 +75,10 @@ def cmd_select(a) -> int:
         plan["warnings"] += warnings
         vocabulary = policy.coverage(map(tuple, manifest.get("label_vocabulary") or []))
         plan["label_coverage"]["vocabulary"] = vocabulary
-        plan["warnings"] += [f"unsupported_label: vocabulary pair {u['role']}/{u['subtype']}: {u['reason']}; "
-                             "such columns are dropped and queued for review" for u in vocabulary["unsupported"]]
+        if vocabulary["unsupported"]:
+            plan["warnings"].append(f"unsupported_label: {len(vocabulary['unsupported'])} of {vocabulary['pairs']} "
+                                    "vocabulary pairs have no protective policy (listed in label_coverage); "
+                                    "columns with them are dropped and queued for review")
         select.set_status(plan)
     out.mkdir(parents=True)
     labels.to_csv(out / "field_labels.csv", index=False)
