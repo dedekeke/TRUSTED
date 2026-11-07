@@ -34,7 +34,7 @@ def tables():
 def plan():
     return {
         "release_id": "TEST-S1/recipient",
-        "status": "ready_for_transform",
+        "status": "policy_valid",
         "trust_level": "controlled_research", "targets": {"k": 5},
         "tables": {"visits": {"action": "RELEASE", "record_key": "vid"}, "labs": {"action": "RELEASE", "record_key": "lab"},
                    "notes": {"action": "WITHHOLD"}},

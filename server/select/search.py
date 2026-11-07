@@ -131,6 +131,47 @@ def _info_loss(levels, items):
     return float(np.mean([levels[_ref(c)] / max(1, len(c['rungs']) - 1) for c in items])) if items else 0.
 
 
+def _outcome(plan, current, failed, tau, base, budget, used, unexplored):
+    targets = {k: v for k, v in plan['targets'].items() if k != 'notes'}
+    tasks = {}
+    for ref, ids in plan.get('required', {}).items():
+        tasks.setdefault(ref, []).extend(t for t in ids if not t.startswith('any_of:'))
+
+    def needs(table, column=None):
+        refs = [f'{table}.{column}'] if column and tasks.get(f'{table}.{column}') else \
+            [r for r in tasks if r.split('.', 1)[0] == table]
+        return sorted({t for r in refs for t in tasks[r]})
+
+    achieved, violations = {}, []
+    for table, r in current['risk'].items():
+        ls = {c: m['l_diversity'].get('min_distinct_l', 0) for c, m in r['sensitive'].items()}
+        ts = {c: m['t_closeness'].get('max_t') for c, m in r['sensitive'].items()}
+        achieved[table] = {'min_k': r['k_anonymity'].get('min_k'), 'share_below_k': r['share_below_k'],
+                           'unknown_subject_rows': r['unknown_subject_rows'], 'l': ls, 't': ts}
+        if r['unknown_subject_rows']:
+            violations.append({'metric': 'subject_identity', 'table': table, 'target': 0,
+                               'achieved': r['unknown_subject_rows'], 'requirements': needs(table)})
+        if r['share_below_k']:
+            violations.append({'metric': 'k', 'table': table, 'target': targets['k'],
+                               'achieved': r['k_anonymity'].get('min_k'), 'share_below_k': r['share_below_k'],
+                               'requirements': needs(table)})
+        for column, l in ls.items():
+            if l < targets.get('l', 1):
+                violations.append({'metric': 'l', 'table': table, 'column': column, 'target': targets.get('l', 1),
+                                   'achieved': l, 'requirements': needs(table, column)})
+            if 't' in targets and (ts[column] is None or ts[column] > targets['t']):
+                violations.append({'metric': 't', 'table': table, 'column': column, 'target': targets['t'],
+                                   'achieved': ts[column], 'requirements': needs(table, column)})
+    achieved['utility'] = current['utility']
+    for task in failed:
+        violations.append({'metric': 'utility', 'table': None, 'target': None if base.get(task) is None else tau * base[task],
+                           'achieved': current['utility'].get(task), 'requirements': [task]})
+    return {'policy_valid': True, 'targets_met': not violations, 'approved': plan['status'] == 'measured_ok',
+            'budget': {'used': used, 'limit': budget, 'exhausted': used >= budget and unexplored > 0,
+                       'unexplored': unexplored},
+            'targets': {**targets, 'tau': tau}, 'achieved': achieved, 'violations': violations}
+
+
 def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
     """Return chosen plan, measured results, requirement floors and every evaluated candidate."""
     if isinstance(budget, bool) or not isinstance(budget, int) or not 1 <= budget <= 50:
@@ -156,6 +197,7 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
     levels = {_ref(c): 0 for c in items}
     floors = {_ref(c): 0 for c in items}
     trace, cache, limits = [], {}, {}
+    unexplored = 0  # candidates the search would still try; > 0 at a budget stop means budget_exhausted
 
     def evaluate(lv, phase, suppression=None, changed_column=None):
         cache_key = (tuple(sorted(lv.items())), tuple(sorted((suppression or {}).keys())))
@@ -194,7 +236,9 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
         age = (T.safe_datetime(src[event]) - T.safe_datetime(src[birth])).dt.days / 365.25
         minimized[d['table']][d['column']] = age.where(age >= 0)
     base = {task.id: None for task in ev.tasks}
-    if ev.tasks and len(trace) < budget:
+    if ev.tasks and len(trace) >= budget:
+        unexplored += 1
+    elif ev.tasks:
         base = ev.utility(minimized)
         trace.append({'evaluation': len(trace) + 1, 'phase': 'utility_baseline', 'levels': {},
                       'risk': {}, 'utility': base, 'accepted': False})
@@ -235,6 +279,7 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
             candidate = evaluate({**levels, ref: level}, 'requirement_floor', changed_column=ref)
             if candidate is None:
                 limits[ref] = 'evaluation budget exhausted during floor probes'
+                unexplored += len(c['rungs']) - level
                 break
             bad = failures(candidate)
             if bad:
@@ -246,6 +291,7 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
         limits.setdefault(ref, f"{', '.join(c.get('required_by', [])) or 'policy'}: coarsest allowed "
                                f"{rung['method'] or rung['action']} {rung['params']}")
     current = baseline
+    stalled = False
     while not met(current) and len(trace) < budget:
         best = None
         complete = True
@@ -269,13 +315,19 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
             if gain >= 0 and (best is None or ratio > best[0]):
                 best = ratio, trial, candidate
         if best is None:
+            stalled = True
             break
         _, levels, current = best
         current['accepted'] = True
         if not complete:
             break
+    if not met(current) and not stalled:
+        unexplored += sum((tuple(sorted({**levels, _ref(c): levels[_ref(c)] + 1}.items())), ()) not in cache
+                          for c in items if levels[_ref(c)] < floors[_ref(c)])
     suppression = {}
-    if not met(current) and len(trace) < budget:
+    if not met(current) and len(trace) >= budget:
+        unexplored += 1  # local suppression not tried
+    elif not met(current):
         prot = ev.build(levels)
         rules = {}
         cap = targets.get('max_suppression', .02)
@@ -327,7 +379,7 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
                 {'level': entry['levels'][_ref(c)], 'reason': entry['reason']}
                 for entry in trace if entry.get('changed_column') == _ref(c) and entry.get('reason')]
     out['suppression'] = suppression
-    out['status'] = 'measured_ok' if met(current) else 'target_unmet'
+    out['status'] = 'measured_ok' if met(current) else 'budget_exhausted' if unexplored else 'target_unmet'
     out['measured'] = {'risk': current['risk'], 'utility': current['utility'], 'baseline_utility': base,
                        'tau': tau, 'evaluations': len(trace), 'information_loss': current['information_loss'],
                        'baseline_definition': 'minimised source precision; shared pseudonyms and exact derived age',
@@ -336,7 +388,8 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
                        't_measurement': 'every candidate when t is a target; otherwise chosen plan only',
                        'requirement_floors': floors}
     out['search_trace'] = trace
-    if out['status'] == 'target_unmet':
+    out['outcome'] = _outcome(out, current, failures(current), tau, base, budget, len(trace), unexplored)
+    if out['status'] != 'measured_ok':
         violations = []
         for table, risk in current['risk'].items():
             if risk['unknown_subject_rows']:
@@ -357,7 +410,8 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8):
                            'limited_by': limits, 'unanswerable_tasks': failures(current),
                            'unknown_subjects': {t: r['unknown_subject_rows'] for t, r in current['risk'].items()
                                                 if r['unknown_subject_rows']},
-                           'reason': ('evaluation budget exhausted' if len(trace) >= budget else
+                           'reason': (f'evaluation budget exhausted with {unexplored} unexplored candidates; '
+                                      'not a proof of infeasibility' if unexplored else
                                       'no allowed step meets k/l/t targets while preserving required utility'),
                            'targets': dict(targets)}
     return out

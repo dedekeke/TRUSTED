@@ -31,7 +31,7 @@ DATE_RX = re.compile(r"\b\d{1,2}[./]\d{1,2}[./](\d{4}|\d{2})\b|\b\d{4}-\d{2}-\d{
 ADDRESS_RX = re.compile(r"\b[A-ZÅÄÖ][a-zåäö]*(?:tie|katu|kuja|polku|rinne|väylä|kaari|mäki|ranta|puisto|piha|tori|"
                         r"vägen|gatan|gränd|stigen|aukio|kallio|niitty|ahde|harju|linja|laakso|kulma)\s\d+[a-z]?"
                         r"(?:\s?[A-Z]\s?\d+)?(?:,?\s\d{5}(?:\s[A-ZÅÄÖ][a-zåäö]+)?)?")
-OK_STATUS = {"ready_for_transform", "target_unmet", "measured_ok"}
+OK_STATUS = {"policy_valid", "target_unmet", "measured_ok"}
 DIAGNOSIS_MAPPING = "pets_eval.utility.health.diagnosis_group"
 ICD_RX = r"^[A-Z]\d{2}"
 NAME_PAIR_RX = re.compile(r"\b[A-ZÅÄÖ][a-zåäöé]+(?:-[A-ZÅÄÖ][a-zåäöé]+)?\s[A-ZÅÄÖ][a-zåäöé]+(?:-[A-ZÅÄÖ][a-zåäöé]+)?\b")
