@@ -92,10 +92,11 @@ class DetectorV3:
             m = max(m, self.cfg.margin_art9)
         return m
 
-    def detect(self, dataset: str) -> pd.DataFrame:
+    def detect(self, dataset: str, profiles: list[dict] | None = None) -> pd.DataFrame:
+        """profiles: precomputed column profiles (deployed inference); default: profile data_dir/<dataset>."""
         t0 = time.time()
         cfg = self.cfg
-        ps = load_profiles(dataset, self.data_dir)
+        ps = profiles if profiles is not None else load_profiles(dataset, self.data_dir)
         qs = [self._view(p) for p in ps]
         t1s = [tier1(q) for q in qs]
         by_table = defaultdict(list)
