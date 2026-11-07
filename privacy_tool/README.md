@@ -5,6 +5,8 @@ Requires the challenge toolkit (`pets_eval`) installed in the active virtualenv.
 
 ## Module contracts
 
+Only `detect` exists on this branch; the other rows are the planned contracts (separate PRs).
+
 Tables are `dict[str, pandas.DataFrame]` read with `dtype=str, keep_default_na=False`. Column references are `"table.column"`.
 
 | Module | Entry point | Returns |
@@ -24,7 +26,7 @@ python -m privacy_tool.detect --data <dataset-or-root-dir> --out labels.csv
 pets-eval detect --pred labels.csv   # scoring only; the detector never reads field_catalog.csv or truth/
 ```
 
-Development score on the 9 shipped datasets (475 fields): macro-F1 0.789, direct-identifier recall 0.934
+Development score on the 9 shipped datasets (475 fields): macro-F1 0.809, direct-identifier precision/recall 0.922 / 0.934
 (B1 rule baseline: 0.646 / 0.895).
 
 ## Requirements

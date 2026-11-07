@@ -65,3 +65,42 @@ def test_uncertain_columns_go_to_review():
     queue = review_queue(detect_table(df, "t"))
     assert "code" in set(queue.column)
     assert "x" not in set(queue.column)
+
+
+def test_review_regressions():
+    n = 40
+    df = pd.DataFrame({
+        "ts": [f"2020-01-0{1 + i % 9}T10:00:00{'+02:00' if i % 3 else 'Z'}" for i in range(n)],  # mixed offsets
+        "mac": [f"aa:bb:cc:dd:ee:{i:02x}" for i in range(n)],
+        "clock": [f"{i % 24:02d}:{i % 60:02d}:00" for i in range(n)],
+        "padded": [f"{i:08d}" for i in range(n)],
+        "course_name": ["Mathematics A", "Physics B", "History C", "Biology D"] * (n // 4),
+        "hetu": [hetu(1 + i % 28, 1, 80, 900 + i) if i % 3 else "NULL" for i in range(n)],
+    })
+    labels = detect_table(df, "t").set_index("column")
+    assert labels.loc["ts", "subtype"] == "TIMESTAMP"
+    assert labels.loc["mac", "subtype"] == "MAC_ADDRESS"
+    assert labels.loc["clock", "subtype"] != "IP_ADDRESS"
+    assert labels.loc["padded", "subtype"] != "PHONE"
+    assert labels.loc["course_name", "privacy_role"] != "direct_identifier"
+    assert labels.loc["hetu", "confidence"] >= .9  # NULL placeholders don't dilute the match rate
+    assert label(pd.DataFrame({"e": [""] * 10}), "e").confidence < .6
+
+
+def test_repeating_station_id_does_not_make_people():
+    readings = pd.DataFrame({"station_id": [f"ST{i % 5}" for i in range(50)], "city": ["Turku", "Salo"] * 25,
+                             "count": [str(i) for i in range(50)]})
+    assert label(readings, "city").privacy_role == "non_sensitive"
+
+
+def test_weak_but_value_detected_identifier_still_marks_people():
+    n = 60
+    trips = pd.DataFrame({
+        "user_account": [f"user{i % 20}@mail.example" if i % 3 else f"user{i % 20}" for i in range(n)],  # ~67% emails
+        "start_ts": [f"2025-05-{1 + i % 28:02d} {i % 24:02d}:{i % 60:02d}" for i in range(n)],
+        "start_lat": [f"60.{4500 + i:05d}" for i in range(n)],
+    })
+    labels = detect_table(trips, "trips").set_index("column")
+    assert labels.loc["user_account", "privacy_role"] == "direct_identifier"
+    assert labels.loc["start_ts", "privacy_role"] == "quasi_identifier"
+    assert labels.loc["start_lat", "privacy_role"] == "quasi_identifier"
