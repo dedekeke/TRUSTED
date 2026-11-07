@@ -158,7 +158,7 @@ def _subjects(tables, prof, ref_label, joins, key_refs) -> dict[str, list[str]]:
 
 
 def discover(tables: dict[str, pd.DataFrame], labels: pd.DataFrame | None = None, declared: dict | None = None) -> dict:
-    """Candidate keys, joins (parent key -> child column) and per-table subject keys; see privacy_tool/README.md."""
+    """Candidate keys, joins (parent key -> child column) and per-table subject keys; see the central README."""
     lab = {} if labels is None else {(r.table, r.column): (r.privacy_role, r.subtype) for r in labels.itertuples()}
     prof = {f"{t}.{c}": _profile(df[c]) for t, df in sorted(tables.items()) for c in df.columns}
     ref_label = {ref: lab.get(tuple(ref.split(".", 1))) for ref in prof}

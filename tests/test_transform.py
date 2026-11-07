@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from privacy_tool.transform import apply, apply_column, redact
+from server.select.transform import apply, apply_column, redact
 
 KEY = b"test-key-not-secret"
 

@@ -4,8 +4,8 @@ import json
 import pandas as pd
 import pytest
 
-from privacy_tool.relations import discover
-from privacy_tool.select import confirm, render, select
+from server.select.relations import discover
+from server.select.select import confirm, render, select
 
 
 def lab(table, column, role, subtype, conf=0.95, evidence="test; person table"):

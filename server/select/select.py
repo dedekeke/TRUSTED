@@ -1,6 +1,6 @@
 """Combine detection, relations, requirements and the rule matrix into one explained plan (decisions.json).
 
-The plan chooses the finest allowed rung per column; the measured search (privacy_tool.search) may coarsen it.
+The plan chooses the finest allowed rung per column; the measured search (server.select.search) may coarsen it.
 Status is `ready_for_transform` or `blocked` (with errors). Ready does not mean privacy-validated.
 The plan never contains key material, raw values, identifier-to-token maps or row maps.
 """
@@ -250,6 +250,9 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
                      "params": dict(chosen["params"]), "level": chosen.get("level", 0), "rungs": rungs,
                      "required_by": required.get(ref, []), "needs_review": cand["needs_review"],
                      "reason": f"{l['privacy_role']}/{l['subtype']}: {why}" + (f"; {'; '.join(cand['notes'])}" if cand["notes"] else "")}
+            for field in ('detector_confidence', 'detector_needs_review', 'art9', 'art9_table'):
+                if field in l:
+                    entry[field] = l[field]
             if chosen["action"] == "DERIVE":
                 events = [x for x in columns[t] if lab.get(_ref(t, x), {}).get("subtype") in EVENT_SUBTYPES]
                 events.sort(key=lambda x: _ref(t, x) not in required)
@@ -317,10 +320,20 @@ def render(plan: dict) -> str:
     for c in plan["columns"]:
         p = ", ".join(f"{k}={v}" for k, v in c["params"].items())
         m = f"{c['method']} {p}".strip() if c["method"] else p
-        lines.append(f"| {c['table']} | {c['column']} | {c['action']} | {m} | {', '.join(c['required_by'])} | {c['reason']} |")
+        explanation = c.get('selection_explanation', c['reason'])
+        lines.append(f"| {c['table']} | {c['column']} | {c['action']} | {m} | {', '.join(c['required_by'])} | {explanation} |")
     for d in plan["derived"]:
         lines.append(f"| {d['table']} | {d['column']} (derived) | DERIVE | {d['method']} width={d['params'].get('width')} "
-                     f"| {', '.join(d['required_by'])} | {d['reason']} |")
+                     f"| {', '.join(d['required_by'])} | {d.get('selection_explanation', d['reason'])} |")
+    if plan.get('measured'):
+        measured = plan['measured']
+        lines += ['', '## Measured (own data)', '', f"- Risk: {measured['risk']}",
+                  f"- Utility: {measured['utility']} (baseline {measured['baseline_utility']}, tau={measured['tau']})",
+                  f"- Evaluations: {measured['evaluations']}"]
+        if plan.get('suppression'):
+            lines.append(f"- Local suppression: {plan['suppression']}")
+        if plan.get('conflict'):
+            lines.append(f"- **Target unmet**: {plan['conflict']}")
     if plan["review_queue"]:
         lines += ["", "## Needs review", ""] + [f"- {r['column']} (confidence {r['confidence']}): {r['evidence']}"
                                                for r in plan["review_queue"]]

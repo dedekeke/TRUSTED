@@ -1,7 +1,8 @@
 """CLI.
 
-  python -m privacy_tool select    --data <dataset dir> (--scenario ID | --spec FILE | --no-purpose TRUST) --out <new dir>
-  python -m privacy_tool transform --data <dataset dir> --plan <decisions.json> --out <new dir>
+  python -m server.select select    --data <dataset dir> (--scenario ID | --spec FILE | --no-purpose TRUST) --out <new dir>
+  python -m server.select search    --data <dataset dir> --plan <decisions.json> --out <new dir>
+  python -m server.select transform --data <dataset dir> --plan <decisions.json> --out <new dir>
 
 The HMAC key is read from the PRIVACY_TOOL_HMAC_KEY environment variable and never written.
 `transform` writes <out>/protected/ (shareable) and <out>/evaluation/ (tables + private row maps, scoring only).
@@ -18,7 +19,8 @@ import pandas as pd
 
 from pets_eval.io import find_package_root, load_tables
 
-from . import relations, requirements, select, transform
+from . import labels as detection_labels
+from . import preview, relations, requirements, search, select, transform
 from .detect import detect_table
 
 KEY_ENV = "PRIVACY_TOOL_HMAC_KEY"
@@ -37,7 +39,11 @@ def cmd_select(a) -> int:
     if not tables:
         sys.exit(f"no CSV tables in {a.data}")
     dataset = Path(a.data).name
-    labels = pd.concat([detect_table(df.head(a.rows), t, dataset) for t, df in tables.items()], ignore_index=True)
+    if a.labels:
+        labels = detection_labels.from_detection(
+            pd.read_csv(a.labels, dtype=str, keep_default_na=False), tables, dataset)
+    else:
+        labels = pd.concat([detect_table(df.head(a.rows), t, dataset) for t, df in tables.items()], ignore_index=True)
     if a.confirm:
         labels = select.confirm(labels, pd.read_csv(a.confirm, dtype=str, keep_default_na=False), a.allow_downgrade)
     if a.scenario:
@@ -57,11 +63,42 @@ def cmd_select(a) -> int:
     (out / "decisions.json").write_text(json.dumps(plan, indent=2, default=str))
     (out / "decisions.md").write_text(select.render(plan))
     n = sum(c["action"] != "DROP" for c in plan["columns"])
-    print(f"{plan['status']}: " + (f"{n} columns would be released, " if plan["status"] == "blocked" else f"{n} columns released, ")
-          + f"{len(plan['errors'])} errors, {len(plan['review_queue'])} to review -> {out}")
+    print(f"{plan['status']}: {n} columns planned, "
+          f"{len(plan['errors'])} errors, {len(plan['review_queue'])} to review -> {out}")
     for e in plan["errors"]:
         print("  error:", e)
     return 0 if plan["status"] != "blocked" else 2
+
+
+def cmd_search(a) -> int:
+    key = os.environ.get(KEY_ENV, "").encode()
+    if not key:
+        sys.exit(f"set {KEY_ENV} (the HMAC key) in the environment")
+    out = Path(a.out)
+    if out.exists():
+        sys.exit(f"refusing to write into existing {out}")
+    plan = json.loads(Path(a.plan).read_text())
+    tasks, orig = None, None
+    if plan.get("source") == "scenario":
+        from pets_eval.utility import all_tasks
+        ids = {t for ts in plan["required"].values() for t in ts if not t.startswith("any_of:")}
+        tasks = [t for t in all_tasks([plan["dataset"]]) if t.id in ids]
+        orig = load_tables(a.data)
+    tables = read_tables(a.data)
+    preview.check_plan(tables, plan)
+    res = search.search(tables, plan, key, tasks, orig, budget=a.budget, tau=a.tau)
+    out.mkdir(parents=True)
+    (out / "decisions.json").write_text(json.dumps(res, indent=2, default=str))
+    (out / "decisions.md").write_text(select.render(res))
+    m = res["measured"]
+    print(f"{res['status']}: k<{plan['targets']['k']} share "
+          f"{max((r['share_below_k'] for r in m['risk'].values()), default=0):.3f}, utility {m['utility']}, "
+          f"{m['evaluations']} evaluations -> {out}")
+    if res.get('conflict'):
+        print('  stop:', res['conflict']['reason'])
+        for violation in res['conflict'].get('violations', []):
+            print('  unmet:', violation)
+    return 0 if res["status"] == "measured_ok" else 3
 
 
 def cmd_transform(a) -> int:
@@ -69,6 +106,9 @@ def cmd_transform(a) -> int:
     if not key:
         sys.exit(f"set {KEY_ENV} (the HMAC key) in the environment")
     plan = json.loads(Path(a.plan).read_text())
+    if plan.get('suppression') or any(c.get('method') in ('week_hour', 'month_hour', 'year_hour')
+                                      for c in plan.get('columns', [])):
+        sys.exit('this plan needs preview-only operations; complete the transform integration before export')
     out = Path(a.out)
     if out.exists():
         sys.exit(f"refusing to write into existing {out}")
@@ -79,7 +119,7 @@ def cmd_transform(a) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="python -m privacy_tool")
+    ap = argparse.ArgumentParser(prog="python -m server.select")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("select", help="detect, resolve requirements and write decisions.json")
     s.add_argument("--data", required=True)
@@ -92,9 +132,17 @@ def main(argv=None) -> int:
     s.add_argument("--no-probe", action="store_true", help="parse task needs only (faster, less accurate)")
     s.add_argument("--declare-joins", action="store_true", help="treat requirement joins as declared")
     s.add_argument("--rows", type=int, default=20000, help="rows sampled for detection")
+    s.add_argument("--labels", help="explained labels CSV from server/detect; replaces built-in detection")
     s.add_argument("--confirm", help="CSV table,column,privacy_role,subtype of reviewer-confirmed labels")
     s.add_argument("--allow-downgrade", action="store_true", help="let --confirm lower protection, with a plan warning")
     s.set_defaults(fn=cmd_select)
+    q = sub.add_parser("search", help="coarsen decisions.json until the risk target is met (measured)")
+    q.add_argument("--data", required=True)
+    q.add_argument("--plan", required=True)
+    q.add_argument("--out", required=True)
+    q.add_argument("--budget", type=int, default=50)
+    q.add_argument("--tau", type=float, default=0.8, help="minimum task score as a share of its unsearched score")
+    q.set_defaults(fn=cmd_search)
     t = sub.add_parser("transform", help="apply decisions.json")
     t.add_argument("--data", required=True)
     t.add_argument("--plan", required=True)

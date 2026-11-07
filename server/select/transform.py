@@ -1,6 +1,6 @@
 """Execute a selection plan: derive, pseudonymise, generalise, redact, drop; write protected tables + private row maps.
 
-Plan contract (produced by privacy_tool.select):
+Plan contract (produced by server.select.select):
   plan["release_id"]                       context for HMAC domains (scenario/recipient), never a secret
   plan["tables"][t] = {"action": "RELEASE"|"WITHHOLD", "record_key": col|None, "reason"}
   plan["columns"]   = [{"table", "column", "subtype", "action", "method", "params", ...}]  one per source column

@@ -1,8 +1,8 @@
 """Key and join discovery on small artificial tables (no real rows)."""
 import pandas as pd
 
-from privacy_tool import relations
-from privacy_tool.relations import NO_LABELS, discover
+from server.select import relations
+from server.select.relations import NO_LABELS, discover
 
 
 def tables(n_parent=100, n_child=300, shift=0):

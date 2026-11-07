@@ -19,6 +19,9 @@ METHODS = {
     "derive_age_band",  # {width, top}: age at the row's event date from DOB, banded; top = start of the open top band.
                         #   Only used through plan["derived"]: the selector turns the DERIVE rung into a derived column
     "age_band",         # {width, top}: band an age value
+    "week_hour",        # {}: Monday of the ISO week + HH:00 (exact date removed, hour and week kept)
+    "year_hour",        # {}: 1 January of the year + HH:00 (only year and hour of day kept)
+    "month_hour",       # {}: first day of the month + HH:00 (exact date and week removed, hour kept)
     "floor_hour",       # {}: YYYY-MM-DD HH:00, floored never rounded
     "date",             # {}: YYYY-MM-DD
     "iso_week",         # {}: YYYY-Www
@@ -69,7 +72,10 @@ HMAC = _r("HMAC", "hmac_sha256", domain=None)
 # Ladders: list of (precision tag, rung), finest → coarsest. The tag is what `precision=` refers to.
 _AGE = [(str(w), _r("GENERALISE", "age_band", width=w, top=AGE_TOP)) for w in (5, 10, 20)]
 _DOB = [(str(w), _r("DERIVE", "derive_age_band", width=w, top=AGE_TOP)) for w in (5, 10, 20)]
-_TIMESTAMP = [("hour", _r("GENERALISE", "floor_hour")), ("date", _r("GENERALISE", "date")),
+# hour-preserving rungs first (week/month start + HH:00 keep the hour-of-day curve, drop the exact date)
+_TIMESTAMP = [("hour", _r("GENERALISE", "floor_hour")), ("hour", _r("GENERALISE", "week_hour")),
+              ("hour", _r("GENERALISE", "month_hour")), ("hour", _r("GENERALISE", "year_hour")),
+              ("date", _r("GENERALISE", "date")),
               ("week", _r("GENERALISE", "iso_week")), ("month", _r("GENERALISE", "month"))]
 _DATE = [("date", _r("GENERALISE", "date")), ("week", _r("GENERALISE", "iso_week")),
          ("month", _r("GENERALISE", "month")), ("year", _r("GENERALISE", "year"))]
@@ -84,7 +90,10 @@ _NUMERIC = [("exact", KEEP)] + [(str(s), _r("GENERALISE", "round_numeric", step=
 
 
 def _categorical(k: int) -> list:
-    return [("exact", KEEP), ("merged", _r("GENERALISE", "merge_rare", min_count=k))]
+    # merging only values rarer than k rarely closes small classes; the stronger rungs keep only common values
+    return [("exact", KEEP), ("merged", _r("GENERALISE", "merge_rare", min_count=k)),
+            ("merged", _r("GENERALISE", "merge_rare", min_count=k * 20)),
+            ("merged", _r("GENERALISE", "merge_rare", min_count=k * 200))]
 
 
 # Ladders keyed on subtype; also used when a sensitive attribute has one of these subtypes.
@@ -192,7 +201,7 @@ def candidates(label: dict, trust_level: str, required: bool, in_join: bool = Fa
         elif str(precision) not in tags:
             raise ValueError(f"precision {precision!r} not in ladder {tags} for {role}/{sub}")
         else:
-            ladder = ladder[: tags.index(str(precision)) + 1]
+            ladder = ladder[: len(tags) - tags[::-1].index(str(precision))]  # keep every rung at that precision
     rungs = [r for _, r in ladder]
     if low_conf:
         # deny by default: unconfirmed labels get only the coarsest protective rung, never KEEP

@@ -2,7 +2,7 @@
 import pandas as pd
 
 from pets_eval.check import HETU_CHECK
-from privacy_tool.detect import detect_table, review_queue
+from server.select.detect import detect_table, review_queue
 
 
 def hetu(d, m, y, n):

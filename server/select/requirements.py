@@ -259,7 +259,7 @@ def _ref(value, where):
 
 
 def from_spec(path):
-    """Load and strictly validate a JSON requirement spec (see examples/health_s1_spec.json)."""
+    """Load and strictly validate a local JSON requirement spec."""
     try:
         spec = json.loads(Path(path).read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:

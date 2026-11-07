@@ -7,7 +7,7 @@ with the column name as a weak hint only; (2) resolve the privacy role from the 
 Never reads metadata/field_catalog.csv, gold spans or truth/; those are only for scoring afterwards
 (`pets-eval detect --pred <labels.csv>`).
 
-usage: python -m privacy_tool.detect --data <dir> [--out labels.csv] [--rows 20000]
+usage: python -m server.select.detect --data <dir> [--out labels.csv] [--rows 20000]
        <dir> is either one dataset folder of CSVs or a folder of dataset folders.
 """
 from __future__ import annotations
