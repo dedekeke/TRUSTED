@@ -4,6 +4,7 @@ import { CATALOG } from '@/data/catalog'
 import { SAMPLES } from '@/data/samples'
 import { SCENARIOS } from '@/data/scenarios'
 import type { Scenario } from '@/types/pipeline.types'
+import type { Job, StartOptions, StepName, StepView } from '@/types/job.types'
 import type { RunState } from '@/types/run.types'
 
 /** Error with the backend's named code (e.g. input_mismatch, step_done, blocked). */
@@ -45,6 +46,40 @@ export const backend = {
     request<RunState>(`/runs/${encodeURIComponent(id)}/confirm`, { confirmations, allow_downgrade: false }),
   select: (id: string, scenario: string) => request<RunState>(`/runs/${encodeURIComponent(id)}/select`, { scenario }),
   search: (id: string, budget: number) => request<RunState>(`/runs/${encodeURIComponent(id)}/search`, { budget }),
+}
+
+const jobPath = (id: string) => `/jobs/${encodeURIComponent(id)}`
+
+/** UI pipeline jobs: one start runs every step in the background; the UI polls the job and reads step views. */
+export const jobs = {
+  create: (source: { dataset: string } | { upload: string }) => request<Job>('/jobs', source),
+  get: (id: string) => request<Job>(jobPath(id)),
+  start: (id: string, options: StartOptions) => request<Job>(`${jobPath(id)}/start`, options),
+  confirm: (id: string, confirmations: Confirmation[], allowDowngrade = false) =>
+    request<Job>(`${jobPath(id)}/confirm`, { confirmations, allow_downgrade: allowDowngrade }),
+  step: (id: string, step: StepName) => request<StepView>(`${jobPath(id)}/steps/${step}`),
+  log: (id: string, step: StepName) => request<{ step: StepName; log: string }>(`${jobPath(id)}/steps/${step}/log`),
+  downloadUrl: (id: string) => `${base}/api${jobPath(id)}/download`,
+  /** PUT one CSV as raw bytes (the server hashes exactly what it receives). */
+  upload: async (id: string, file: File, onProgress?: (share: number) => void) =>
+    new Promise<{ file: string; bytes: number; sha256: string }>((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('PUT', `${base}/api${jobPath(id)}/files/${encodeURIComponent(file.name)}`)
+      xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total)
+      xhr.onload = () => {
+        const data = (() => {
+          try {
+            return JSON.parse(xhr.responseText)
+          } catch {
+            return null
+          }
+        })()
+        if (xhr.status >= 200 && xhr.status < 300) resolve(data)
+        else reject(new ApiError(data?.error?.code ?? `http_${xhr.status}`, data?.error?.message ?? xhr.statusText))
+      }
+      xhr.onerror = () => reject(new ApiError('network', 'upload failed'))
+      xhr.send(file)
+    }),
 }
 
 /** Static data for the in-browser mode; scenarios come from the backend when it is configured. */
