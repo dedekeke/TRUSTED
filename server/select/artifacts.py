@@ -237,8 +237,22 @@ def check_evidence(plan: dict, tables: dict, labels, manifest: dict) -> tuple[li
             warnings.append(f"ambiguous_subject: detect relation {rid(r, i)} suggests "
                             f"{x or 'a column missing from the input'} as a subject key; selection resolved "
                             f"{sorted(subjects) or 'none'} and does not adopt it")
+    # an identifier that encodes other attributes (HETU -> birth date, sex; IP -> location) must not be released
+    # in a form that keeps them; HMAC tokens, redaction and DROP hide them. Artifact strings are never echoed.
+    decisions = {f"{c['table']}.{c['column']}": c for c in plan["columns"]}
+    embedded = 0
+    for i, r in enumerate(relations):
+        if r.get("kind") != "embedded":
+            continue
+        embedded += 1
+        x, c = ref(r.get("left")), decisions.get(ref(r.get("left")) or "")
+        if x and c and c["action"] not in ("DROP", "REDACT") and \
+                not (c["action"] == "HMAC" and c.get("method") == "hmac_sha256"):
+            warnings.append(f"embedded_qi: detect relation {rid(r, i)} says {x} encodes other attributes; it is "
+                            f"released as {c['action']}/{c.get('method')}, which keeps them; check the "
+                            "quasi-identifier risk or tokenise it")
     summary = {"spans": {"count": sum(by_column.values()), "by_column": by_column, "stale": len(stale)},
                "linkage": {"present": path is not None, "relations": len(relations), "joins": len(joins),
-                           "subjects": sum(r.get("kind") == "subject" for r in relations),
+                           "subjects": sum(r.get("kind") == "subject" for r in relations), "embedded": embedded,
                            "ambiguous": sorted(map(str, ambiguous))}}
     return errors, warnings, summary

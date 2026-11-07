@@ -2,7 +2,8 @@
 
 The combined backend is on **main**. Detect lives in `server/detect`; selection modules live directly in
 **`server/select/`** and import as `server.select.*`; the redundant `privacy_tool/` package layer is gone.
-The original selection worktree and unrelated client edits are preserved. Nothing is committed yet.
+Integration branch `pet-12-detect-select-integration` merges `pet-9` (Detect deploy + artifact contract) with the
+shared `server.actions`/`server.transform`; see `MERGE_NOTES.md`. `python -m server.pipeline` runs the whole chain.
 
 ## Current flow
 
@@ -19,7 +20,8 @@ flowchart TD
     I --> M[Search candidates in memory: floors, greedy steps, suppression]
     M --> K[Owner-data k/l/t and uniqueness by subject, plus required-task utility]
     K --> O[Chosen plan and trace: measured_ok, target_unmet or budget_exhausted]
-    O -. next implementation stage .-> X[Transform: apply final plan and validate exported data]
+    O -->|approved measured_ok only| X[Transform: execute, stage, validate serialized files, publish]
+    X -->|refused or failed| Z[Diagnostics; no approved release]
 ```
 
 The handoff is an artifact boundary. `select --labels` **does not instantiate or train Detect v3**.
@@ -40,9 +42,9 @@ decisions and explanations; neither writes protected tables or private row maps.
 | Search | Probes floors, greedily coarsens and supports local suppression; ≤50 evaluations and ≤2% suppression allowance | Deterministic trace, chosen evaluation, utility-rejected rungs and named conflicts; never lower targets |
 | Metrics | Uses `pets_eval.privacy`, counted by distinct subject contributions | When t is a target, check each candidate; otherwise measure t on the chosen plan |
 
-`preview.py` contains selection-only subject resolution, local-suppression and hour-preserving previews.
-It reuses the existing column/age/validation helpers. **The legacy `transform.py` implementation is unchanged**; completing transformation is still the next stage. Its retained CLI is a prototype
-and rejects preview-only hour rungs or local suppression instead of exporting an incomplete plan.
+Selection previews and the final export share one implementation, `server/actions.py`, which includes
+subject resolution, local suppression and hour-preserving rungs. `server.transform` is the only export
+path. `python -m server.select transform` delegates to it.
 
 ## Run the combination
 
@@ -77,28 +79,54 @@ No training catalog, `truth/` or gold spans are needed by selection.
 
 | Gap | What remains / expected behavior |
 |---|---|
-| Detector deployment | Detect v3 currently loads `metadata/field_catalog.csv` and training profiles in its constructor. It needs a separately trained, frozen model/vocabulary loader before serving catalog-free production inference. Selection consumes saved labels and must not invoke that training path. |
+| Detector deployment | Solved by `pets_detect_v3 train`/`infer`: inference reads only a trained model dir and one data dir. A model must be trained (catalog + public span labels) and is generated data: never commit it. |
 | Artifact provenance | `select --labels` requires the contract-v1 manifest and rejects other input bytes, labels or dataset revisions by name; `search` re-checks the plan's input digests and records `plan_sha256`. The legacy built-in detector path is marked unbound. |
-| Spans and linkage | Selection validates `spans.jsonl`/`linkage.json` (`stale_span`, `missing_span_evidence`, `ambiguous_join`, `ambiguous_subject`) and keeps only counts/ids. Selection still recomputes its own joins and distinct-subject risk; detector row-count risk is not a substitute. Transform must integrate span/entity mappings and verify consistent pseudonyms. |
+| Spans and linkage | Selection validates `spans.jsonl`/`linkage.json` (`stale_span`, `missing_span_evidence`, `ambiguous_join`, `ambiguous_subject`, `embedded_qi`) and keeps only counts/ids; it still recomputes its own joins and distinct-subject risk. Transform reads the spans through `--detect <dir>`, re-checking the manifest, `span_id` and offsets. Entities are numbered per conversation when the text table has exactly one foreign key (e.g. `turns.conversation_id`); otherwise per cell. Cross-dataset shared identifiers and Detect's k<5 row estimate are not part of single-dataset inference. |
 | Confidence and subtype coverage | Every emitted and vocabulary (role, subtype) pair maps to a protective policy or `unsupported_label` (DROP + review; blocks when required). Unconfirmed uncertain required labels block with `review_required`. The statistical detector's subtype quality is not established by schema validation alone. |
 | HEALTH-S1 privacy | The prior 50-evaluation selection result remains `target_unmet`: 12.98% of known visit subject/class contributions below k=5, l failures, and missing subjects in 921 visits / 2,205 linked lab rows. More search does not repair missing identities. These figures are historical selection evidence, not a fresh Detect-v3 benchmark. |
 | UI/API | The frontend still uses local/static data and browser-side services. This combination connects backend Python stages through files; a backend API and frontend wiring are not implemented here. |
 | Release approval | A valid/exportable plan is not evidence that privacy targets are met. Do not present a `target_unmet` result as an approved release. Budget exhaustion is not a proof that every plan fails. |
 
-## Remaining pipeline stage: Transform
+## Transform stage
 
-- Execute all chosen actions/parameters, including hour-preserving time rungs and local suppression, with
-  the same semantics as selection previews. Consolidate shared helpers instead of creating a second rule system.
-- Preserve scoped HMAC domains, joins, blank handling, original-source age derivation and parse-failure counts.
-  Obtain keys from the environment; do not store keys or identifier-to-token maps in decisions.
-- Integrate free-text spans/entity consistency and agree an explicit policy for unknown subjects and unmet targets.
-- Export into fresh directories; keep private scoring row maps separate from protected tables. Do not overwrite sources.
-- Recheck policy and measured constraints, run full-data export validation and `pets-eval check`, investigate scan hits,
-  and verify row maps, joins and required utility. This is where the remaining execution/export work belongs.
+Implemented as `server.transform`; see the central README and [server/transform.md](server/transform.md).
+It exports only approved `measured_ok` plans (or a marked `--allow-unapproved` export) and validates the written
+files before it publishes them. Free text uses Detect spans: `[PERSON_1]`-style pseudonyms consistent within a
+conversation at internal/contractual trust, `[PERSON]` placeholders otherwise. For HEALTH-S1 it currently
+produces refusal diagnostics.
 
-The legacy transformer and earlier export experiments are retained for reference; they are not newly certified by this move.
+## One command
+
+```bash
+PRIVACY_TOOL_HMAC_KEY=... python -m server.pipeline --data <package-root>/data/customer_service \
+  --scenario CS-S1 --model <detect model dir> --release-id CS-S1/vendor-a --out <fresh dir>
+```
+
+Runs `detect/` -> `select/` -> `search/` -> `transform/` through each stage's own CLI and writes `pipeline.json`
+(exit code, status and digests per stage). It stops at a blocked selection or an unapproved search.
 
 ## Validation
+
+### Integration branch `pet-12-detect-select-integration` (2026-11-07)
+
+- Test suite: **322 passed** (`tests/` + `server/detect/tests/`), including Detect deploy end-to-end tests that
+  train a small model and run `server.pipeline` through to a validated release with `[PERSON_1]` pseudonyms.
+- Detect model trained on the 9 public datasets in about 70 s (`pets_detect_v3 train`, no LLM tier).
+- **CS-S1, full data, `server.pipeline`:** detect -> select `policy_valid` -> search `measured_ok`, approved
+  (2 evaluations) -> transform **validated**. Utility CS-U1 0.9995, CS-U3 1.0, CS-U4 1.0, CS-U5 0.0 (its
+  baseline is also 0.0). `pets-eval text` on the protected `turns.text` (48,058 gold values): residual
+  NATIONAL_ID, PAYMENT_CARD, IBAN, PHONE, EMAIL 0%; SECRET 1.07% (98.9% removed, target >=98%); PERSON 0.2%;
+  HEALTH 0.57% (4 of 700, so "remove HEALTH mentions" is not fully met); ORG 17.8%, LOCATION 12.0%, DATE 6.6%.
+  The identifier scan found 21 PHONE pattern hits, all inside HMAC tokens and classified as false positives.
+  Placeholder text does not change which characters are removed, so typed placeholders would leak the same.
+- **HEALTH-S1, full data:** stops at select (`blocked`, exit 2): `review_required` on `ed_visits.visit_id`
+  and `lab_results.test_code`, which H-U7 requires. A reviewed `--confirm` file is needed; the earlier
+  `server/select/examples/health_s1_confirmed.csv` was removed from `main` by the force-pushed `d13faa9`.
+- A first CS-S1 run failed validation on purpose: search had measured utility with rule-only redaction and
+  Transform redacted with Detect spans (CS-U1 0.99977 vs 0.99947). `search --detect` now previews with the same
+  spans, plans record `measured.text_redaction`, and Transform refuses a mismatch before export.
+
+### Earlier
 
 - Before integration, main's existing selector suite: **156 passed**.
 - Combined detector/selector suite: **248 passed** (`../.venv/bin/python -m pytest` from `src/`).

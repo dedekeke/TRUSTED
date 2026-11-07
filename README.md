@@ -1,7 +1,7 @@
 # TRUSTED PETS
 
-This is the central backend guide: **Detect → Select → Transform**. Detect and measured selection exist;
-the final transform/export stage is planned in [server/transform.md](server/transform.md).
+This is the central backend guide: **Detect → Select → Transform**. All three stages exist; the
+final transform/export stage follows the plan in [server/transform.md](server/transform.md).
 The frontend is in `client/`; its backend API connection remains separate work.
 
 ## Layout and setup
@@ -10,6 +10,9 @@ The frontend is in `client/`; its backend API connection remains separate work.
 server/
   detect/       column detection, text spans and linkage development tools
   select/       selection modules directly in this directory; no privacy_tool layer
+  transform/    final stage: release gate, staged export, serialized validation and reports
+  actions.py    shared pure protection operations (selection previews and final export run the same code)
+  pipeline.py   one command: detect infer -> select -> search -> transform (python -m server.pipeline)
   transform.md  implementation and output-formatting plan for the final stage
 ```
 
@@ -196,8 +199,9 @@ without one, t is measured on the chosen plan. A budget stop does not prove ever
 ### Selection module contracts
 
 
-Selection through measured search is implemented. The built-in detector is a legacy fallback; the transformer
-is a retained prototype and does not yet implement every measured-search preview operation.
+Selection through measured search is implemented. The built-in detector is a legacy fallback. All protection
+operations, including hour-preserving rungs and local suppression, live in `server/actions.py`; the final
+export is `server.transform`.
 
 Tables are `dict[str, pandas.DataFrame]` read with `dtype=str, keep_default_na=False`. Column references are `"table.column"`.
 
@@ -208,7 +212,7 @@ Tables are `dict[str, pandas.DataFrame]` read with `dtype=str, keep_default_na=F
 | `requirements` | `from_scenario(scenario_id, tables, root, probe=True, tolerance=0.05)`, `from_spec(path)`, `no_purpose(trust_level, dataset)` | `{"source", "scenario", "dataset", "trust_level", "targets", "targets_text", "tasks": [{"id", "table", "columns", "any_of", "precision", "evidence": {"declared", "parsed", "probed"}}], "required": {"t.c": [task ids]}, "any_of": [[["t.a"], ["t.b", "t.c"]]] (groups of alternatives, each a list of refs all needed), "precision": {"t.c": "hour"}, "joins": [{"columns", "tasks", "kind": "same_name" or "declared"}], "subject_key", "warnings"}`; select must confirm `same_name` joins with `relations.discover` before forcing a shared key domain |
 | `policy` | `candidates(label, trust_level, required, in_join=False, precision=None, k=None)`, `targets(trust_level, scenario_targets=None)`, `violations(label, rung, trust_level, k=None)` | `{"rungs": [{"action", "method", "params", "level"}] finest first, "needs_review", "escalate", "notes"}`; targets `{"k", "l"?, "free_text"?, "max_suppression", "notes"}` (notes list any loosening by the scenario); violations = breaches, accepting only DROP or a rung `candidates` offers. `METHODS` = operations `transform` must implement |
 | `select` | `select(tables, labels, relations, requirements, release_id=None)`, `confirm(labels, confirmed)`, `render(plan)` | Plan dict (`decisions.json`): `tables` (RELEASE/WITHHOLD + record_key), one `columns` entry per released source column (chosen rung + all `rungs`), `derived`, `domains`, `review_queue`, `warnings`, `errors`; `reviews`, `label_coverage`, `outcome`; status `policy_valid` or `blocked` |
-| `transform` | `apply(tables, plan, key, out_dir)` | Protected tables + private row maps in a fresh directory |
+| `transform` | `check_plan(tables, plan)`, `release_gate(plan, allow_unapproved=False)`, `apply(tables, plan, key, out_dir=None, eval_dir=None, allow_unapproved=False)` | Rule-matrix re-validation; the shared approval rule; `apply` is the legacy in-memory API over `server.actions.execute`. Use `python -m server.transform` for releases |
 | `search` | `search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8)` | Plan with chosen rungs, measured results and trace |
 
 
@@ -219,17 +223,58 @@ columns can each look unnecessary when tested alone; parsed alternatives are nee
 Scenario resolution is followed by precision probes during search. Selection does not read the training
 catalog, truth or gold spans.
 
-## Transform: next stage
+## Transform: validated release export
 
-[server/transform.md](server/transform.md) defines the implementation sequence, shared action semantics,
-output layout, formatting rules, failure behavior and acceptance tests. It is a plan, not an implemented
-release path. `server/select/transform.py` is the retained prototype used for existing pure helpers.
-Its legacy CLI refuses local suppression and new hour-preserving rungs until final transform integration
-exists. Do not treat the prototype's ability to export an older plan as privacy approval.
+`server.transform` executes a **measured** plan and publishes a release only after the written files pass
+validation. Design and contracts: [server/transform.md](server/transform.md).
 
-Current full-data HEALTH-S1 selection still returns `target_unmet` (12.98% below k=5, l failures,
-921 visits and 2,205 linked lab rows with missing subject IDs), despite all five utility scores ≥0.9978.
-The integration validation used historical saved labels; it was not a new Detect-v3 prediction benchmark.
+```bash
+PRIVACY_TOOL_HMAC_KEY=... python -m server.transform --data <package-root>/data/health \
+  --plan <fresh-search-dir>/decisions.json --out <fresh-run-dir> \
+  [--detect <detect-out-dir>] [--text-fallback rules] [--allow-unapproved] [--no-scorecard]
+```
+
+`python -m server.select transform` takes the same options and calls the same executor. The whole chain runs
+with one command (each stage through its own CLI, into `detect/`, `select/`, `search/`, `transform/`):
+
+```bash
+PRIVACY_TOOL_HMAC_KEY=... python -m server.pipeline --data <package-root>/data/customer_service \
+  --scenario CS-S1 --model <detect model dir> --release-id CS-S1/vendor-a --out <fresh dir>
+```
+
+Free text uses the Detect spans: at internal/contractual trust the `entity_pseudonyms` profile writes
+`[PERSON_1]`, `[PHONE_2]`, ... numbered per conversation (a person keeps one number across turns; numbers
+restart in the next conversation, so they do not link records); otherwise `[PERSON]`. Run `search` with the same
+`--detect` dir (the pipeline does): previews then redact exactly as the export, and Transform refuses a plan
+measured with different text redaction.
+
+| Exit | Status | Result |
+|---|---|---|
+| 0 | `validated` | `protected/` (recipient), `evaluation/` (owner-private copies, row maps, input manifest), `reports/`, `manifest.json` with `approved_release: true` |
+| 0 | `unapproved_export` | Only with `--allow-unapproved` for a non-blocked plan: same layout and checks (k/l/t and utility are recorded, not gating), `NOT_APPROVED.txt` in `protected/` and `evaluation/`, `approved_release: false` |
+| 2 | `refused` | Preflight failed; only `diagnostics.json`/`.md` are written, no data. Input-binding rejections (`[input_mismatch]`, `[stale_span]`, ...) print the code and write nothing |
+| 3 | `validation_failed` | Files stay private under `staging/`; `diagnostics.*` and a `failed` manifest name the failed checks |
+
+Before writing anything, Transform checks the plan's `provenance` against the input bytes (the same contract-v1
+binding as `search`), and, with `--detect`, the Detect manifest, the `spans.jsonl` sha256 and every
+`span_id`/offset. Preflight then refuses a plan that is not an approved `measured_ok` (`outcome.approved`
+needs provenance bound to a Detect manifest), has unresolved review items on released or required fields,
+or lacks an explicit `--release-id`. Free-text columns need Detect spans for that column; without them the
+rule-only redactor must be chosen explicitly with `--text-fallback rules`. After writing, Transform reloads
+every file and checks:
+- round trip and row maps
+- action output formats
+- join/orphan status
+- suppression against the measured candidate
+- k/l/t, uniqueness and utility re-measured on the written tables
+- `pets-eval check` on all lines of `protected/`
+
+Each scanner hit is attributed to a cell. The only accepted false positive is a pattern match inside a
+validated HMAC token. The toolkit scorecard runs on the evaluation copy and is report-only.
+
+Full-data HEALTH-S1 is still `target_unmet` (12.98% below k=5, l failures, 921 visits and 2,205 linked lab
+rows with missing subject IDs). Transform therefore refuses it with diagnostics; it lowers no targets and
+drops no rows. A full-data release needs the owner to resolve those conflicts and reselect.
 
 Never commit raw data, protected/evaluation outputs, row maps or keys. Detector outputs/caches and selection
 outputs may contain sensitive material; use fresh ignored directories and keep them private.

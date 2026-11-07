@@ -9,7 +9,7 @@ Exit codes: 0 policy_valid (select) / measured_ok (search); 2 blocked or rejecte
   python -m server.select transform --data <dataset dir> --plan <decisions.json> --out <new dir>
 
 The HMAC key is read from the PRIVACY_TOOL_HMAC_KEY environment variable and never written.
-`transform` writes <out>/protected/ (shareable) and <out>/evaluation/ (tables + private row maps, scoring only).
+`transform` delegates to `python -m server.transform`: <out>/protected/ (shareable), <out>/evaluation/ (private).
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ import pandas as pd
 
 from pets_eval.io import find_package_root, load_tables
 
-from . import artifacts, policy, preview, relations, requirements, search, select, transform
+from . import artifacts, policy, preview, relations, requirements, search, select
 from . import labels as detection_labels
 from .detect import detect_table
 
@@ -111,9 +111,19 @@ def cmd_search(a) -> int:
         tasks = [t for t in all_tasks([plan["dataset"]]) if t.id in ids]
         orig = load_tables(a.data)
     tables = read_tables(a.data)
+    spans = None
+    if a.detect:  # measure free text exactly as the export will redact it (same loader and checks as transform)
+        from server.transform import spans as span_io
+        try:
+            detect, by_ref = span_io.load(a.detect, a.data, plan)
+            redact = {f"{c['table']}.{c['column']}" for c in plan["columns"] if c["action"] == "REDACT"}
+            spans = span_io.align(detect, by_ref, tables, redact)
+        except artifacts.ArtifactError as e:
+            print(f"rejected: {e}", file=sys.stderr)
+            return EXIT["blocked"]
     try:
         preview.check_plan(tables, plan)
-        res = search.search(tables, plan, key, tasks, orig, budget=a.budget, tau=a.tau)
+        res = search.search(tables, plan, key, tasks, orig, budget=a.budget, tau=a.tau, spans=spans)
     except ValueError as e:
         print(f"blocked: {e}", file=sys.stderr)
         return EXIT["blocked"]
@@ -134,29 +144,18 @@ def cmd_search(a) -> int:
 
 
 def cmd_transform(a) -> int:
-    key = os.environ.get(KEY_ENV, "").encode()
-    if not key:
-        sys.exit(f"set {KEY_ENV} (the HMAC key) in the environment")
-    plan_bytes = Path(a.plan).read_bytes()
-    plan = json.loads(plan_bytes)
-    artifacts.check_plan(a.data, plan, plan_bytes)
-    if plan.get('suppression') or any(c.get('method') in ('week_hour', 'month_hour', 'year_hour')
-                                      for c in plan.get('columns', [])):
-        sys.exit('this plan needs preview-only operations; complete the transform integration before export')
-    out = Path(a.out)
-    if out.exists():
-        sys.exit(f"refusing to write into existing {out}")
-    try:
-        _, stats = transform.apply(read_tables(a.data), plan, key, out / "protected", out / "evaluation",
-                                   allow_unapproved=a.allow_unapproved)
-    except ValueError as e:
-        print(f"blocked: {e}", file=sys.stderr)
-        return EXIT["blocked"]
-    (out / "transform_stats.json").write_text(json.dumps(stats, indent=2))
-    if not stats["release_gate"]["approved"]:
-        print(f"  UNAPPROVED export of a {plan.get('status')} plan (--allow-unapproved); not a release")
-    print(f"wrote {len(stats['rows'])} tables -> {out}/protected (shareable), {out}/evaluation (private)")
-    return 0
+    """Delegates to the one final executor (`python -m server.transform`), with its release gate and checks."""
+    from server.transform.__main__ import main as transform_main
+    argv = ["--data", a.data, "--plan", a.plan, "--out", a.out]
+    if a.detect:
+        argv += ["--detect", a.detect]
+    if a.text_fallback:
+        argv += ["--text-fallback", a.text_fallback]
+    if a.no_scorecard:
+        argv.append("--no-scorecard")
+    if a.allow_unapproved:
+        argv.append("--allow-unapproved")
+    return transform_main(argv)
 
 
 def main(argv=None) -> int:
@@ -184,11 +183,15 @@ def main(argv=None) -> int:
     q.add_argument("--out", required=True)
     q.add_argument("--budget", type=int, default=50)
     q.add_argument("--tau", type=float, default=0.8, help="minimum task score as a share of its unsearched score")
+    q.add_argument("--detect", help="detect output dir: previews redact free text with its spans, as transform will")
     q.set_defaults(fn=cmd_search)
-    t = sub.add_parser("transform", help="apply decisions.json")
+    t = sub.add_parser("transform", help="export a validated release (same as python -m server.transform)")
     t.add_argument("--data", required=True)
     t.add_argument("--plan", required=True)
     t.add_argument("--out", required=True)
+    t.add_argument("--detect", help="detect output dir (manifest.json + spans.jsonl) for free-text redaction")
+    t.add_argument("--text-fallback", choices=["rules"])
+    t.add_argument("--no-scorecard", action="store_true")
     t.add_argument("--allow-unapproved", action="store_true",
                    help="export a plan that is not an approved measured_ok release; recorded in the output")
     t.set_defaults(fn=cmd_transform)

@@ -309,7 +309,7 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
     plan = {
         "policy_version": POLICY_VERSION, "detector_version": DETECTOR_VERSION,
         "input_fingerprint": fingerprint(tables),
-        "release_id": release_id or f"{scope}/{trust}",
+        "release_id": release_id or f"{scope}/{trust}", "release_id_explicit": bool(release_id),
         "status": None,
         "source": requirements.get("source"), "scenario": requirements.get("scenario"),
         "dataset": requirements.get("dataset"), "trust_level": trust, "targets": tg,

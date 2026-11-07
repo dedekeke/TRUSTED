@@ -10,6 +10,7 @@ from __future__ import annotations
 from .detect import DIRECT, ENTITY_IDS, REVIEW_BELOW, TECHNICAL
 
 TRUST_LEVELS = ["internal", "contractual", "controlled_research", "public"]
+ENTITY_PSEUDONYM_TRUST = {"internal", "contractual"}  # free-text profile: numbered pseudonyms per conversation
 ACTIONS = {"KEEP", "DROP", "HMAC", "GENERALISE", "REDACT", "DERIVE", "WITHHOLD"}  # WITHHOLD is table-level
 
 # Operations the transformer must implement; each rung uses exactly one. Params:
@@ -36,7 +37,8 @@ METHODS = {
     "icd_3char",        # {}: ICD-10 category, e.g. J18.9 -> J18
     "diagnosis_group",  # {mapping}: must be "pets_eval.utility.health.diagnosis_group"; unmapped codes become blank
     "icd_chapter",      # {}: first letter of the ICD-10 code
-    "redact_spans",     # {profile}: replace detected PII spans with typed placeholders
+    "redact_spans",     # {profile}: replace detected PII spans; profile "typed_placeholders" -> [PERSON],
+                        #   "entity_pseudonyms" -> [PERSON_1], numbered per Detect entity within one conversation
 }
 NEEDS_METHOD = {"HMAC", "GENERALISE", "DERIVE", "REDACT"}
 
@@ -178,7 +180,10 @@ def _ladder(role: str, sub: str, trust_level: str, required: bool, in_join: bool
             return [], None
         if trust_level == "public":
             return [], "free text not releasable at public trust: needs aggregate/DP path"
-        return [(None, _r("REDACT", "redact_spans", profile="typed_placeholders"))], None
+        # contractual/internal recipients (e.g. an LLM vendor reading transcripts) need to follow who said what:
+        # numbered placeholders consistent within one conversation/record, never across them
+        profile = "entity_pseudonyms" if trust_level in ENTITY_PSEUDONYM_TRUST else "typed_placeholders"
+        return [(None, _r("REDACT", "redact_spans", profile=profile))], None
     if role == "non_sensitive":
         return [("exact", KEEP)], None
     raise ValueError(f"unknown privacy_role {role!r}")

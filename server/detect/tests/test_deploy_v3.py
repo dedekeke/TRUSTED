@@ -190,3 +190,94 @@ def test_benchmark_scores_against_catalog(pkg, tmp_path):
     deploy.infer(model, root / "data" / "zz_gamma", tmp_path / "d")
     r = deploy.benchmark(root, tmp_path / "d" / "labels.csv")
     assert r["n_fields"] == 12 and 0 <= r["macro_f1"] <= 1
+
+
+def _conversation_inputs():
+    turns = pd.DataFrame({"turn_id": ["t1", "t2", "t3", "t4"], "conversation_id": ["c1", "c1", "c2", "c1"],
+                          "text": ["call me at 040 1234567", "yes 040 1234567 again", "040 1234567 here",
+                                   "or 050 7654321"]})
+    labels = pd.DataFrame([{"table": "turns", "column": "text", "privacy_role": "free_text", "subtype": "FREE_TEXT"},
+                           {"table": "turns", "column": "conversation_id", "privacy_role": "technical_identifier",
+                            "subtype": "OTHER"}])
+    ps = [{"table": "turns", "column": "turn_id", "fk_to": []},
+          {"table": "turns", "column": "conversation_id", "fk_to": ["conversations.conversation_id"]},
+          {"table": "turns", "column": "text", "fk_to": []}]
+    return {"turns": turns}, labels, ps
+
+
+def test_entities_are_numbered_per_conversation_not_per_cell():
+    tables, labels, ps = _conversation_inputs()
+    stats, groups = {}, {}
+    spans = list(deploy._spans(tables, labels, None, "f" * 64, 0.6, stats, ps, groups))
+    ids = {s["row_index"]: s["entity_id"] for s in spans if s["entity_type"] == "PHONE"}
+    assert ids[0] == ids[1]                      # same number, two turns of conversation c1: one entity
+    assert ids[0] != ids[2]                      # same number in conversation c2: not linkable
+    assert ids[3] != ids[0] and ids[3].split(":")[2] == ids[0].split(":")[2]  # other number, same group
+    assert groups == {"turns.text": "turns.conversation_id"}
+    assert all("c1" not in s["entity_id"] and "040" not in s["entity_id"] for s in spans)  # opaque ids
+
+
+def test_no_or_ambiguous_group_key_keeps_one_group_per_cell():
+    tables, labels, ps = _conversation_inputs()
+    ps[0]["fk_to"] = ["other.turn_id"]           # two FK columns: customer vs conversation is ambiguous
+    groups = {}
+    spans = list(deploy._spans(tables, labels, None, "f" * 64, 0.6, {}, ps, groups))
+    ids = {s["row_index"]: s["entity_id"] for s in spans if s["entity_type"] == "PHONE"}
+    assert ids[0] != ids[1] and groups == {"turns.text": None}
+
+
+def test_linkage_reports_information_embedded_in_identifiers_without_values():
+    tables = {"people": pd.DataFrame({"hetu": ["010180-901A", "020290-902B"], "ip": ["10.0.0.1", "10.0.0.2"]})}
+    labels = pd.DataFrame([{"table": "people", "column": "hetu", "privacy_role": "direct_identifier",
+                            "subtype": "NATIONAL_ID", "confidence": .99, "needs_review": False},
+                           {"table": "people", "column": "ip", "privacy_role": "technical_identifier",
+                            "subtype": "IP_ADDRESS", "confidence": .9, "needs_review": False}])
+    ps = [{"table": "people", "column": c, "fk_to": []} for c in ("hetu", "ip")]
+    link = deploy._linkage(ps, tables, labels, "f" * 64)
+    emb = {r["left"]["column"]: r for r in link["relations"] if r["kind"] == "embedded"}
+    assert set(emb) == {"hetu", "ip"} and emb["hetu"]["right"] is None
+    assert any("birth date" in e for e in emb["hetu"]["encodes"]) and emb["hetu"]["evidence"] == {"encoded_attributes": 2}
+    raw = json.dumps(link)
+    assert "010180" not in raw and "10.0.0.1" not in raw
+
+
+def test_pipeline_runs_detect_select_search_transform_end_to_end(pkg, tmp_path, monkeypatch):
+    from server.pipeline import main as pipeline
+    root, model = pkg
+    data = root / "data" / "zz_alpha"
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"dataset": "zz_alpha", "trust_level": "internal", "targets": {"k": 1},
+                                "required": [{"column": "people.notes", "task": "T-NOTES"},
+                                             {"column": "events.category", "task": "T-CAT"}]}))
+    monkeypatch.setenv("PRIVACY_TOOL_HMAC_KEY", "test-only-key")
+    out = tmp_path / "run"
+    code = pipeline(["--data", str(data), "--spec", str(spec), "--model", str(model), "--release-id", "zz/test",
+                     "--out", str(out), "--no-scorecard"])
+    record = json.loads((out / "pipeline.json").read_text())
+    assert code == 0, record
+    assert [record["stages"][s]["exit"] for s in ("detect", "select", "search", "transform")] == [0, 0, 0, 0]
+    assert record["stages"]["search"]["approved"] is True
+    assert record["stages"]["transform"]["status"] == "validated"
+    notes = pd.read_csv(out / "transform" / "protected" / "people.csv", dtype=str, keep_default_na=False).notes
+    src = pd.read_csv(data / "people.csv", dtype=str, keep_default_na=False)
+    assert notes.str.contains(r"\[PERSON_1\]").mean() > .9          # Detect spans -> numbered pseudonyms
+    assert not any(n in " ".join(notes) for n in src.full_name)       # no source name survives
+    assert "040 " not in " ".join(notes)
+    assert json.loads((out / "transform" / "transform_stats.json").read_text())["redaction"] == \
+        {"people.notes": "detect_entity_pseudonyms+rules"}
+
+
+def test_pipeline_stops_at_an_unapproved_search(pkg, tmp_path, monkeypatch):
+    from server.pipeline import main as pipeline
+    root, model = pkg
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({"dataset": "zz_alpha", "trust_level": "internal", "targets": {"k": 50},
+                                "required": [{"column": "people.city", "task": "T-CITY"},
+                                             {"column": "people.postcode", "task": "T-PC"}]}))
+    monkeypatch.setenv("PRIVACY_TOOL_HMAC_KEY", "test-only-key")
+    out = tmp_path / "run"
+    code = pipeline(["--data", str(root / "data" / "zz_alpha"), "--spec", str(spec), "--model", str(model),
+                     "--release-id", "zz/test", "--out", str(out), "--no-scorecard", "--budget", "5"])
+    record = json.loads((out / "pipeline.json").read_text())
+    assert code != 0 and record["stages"]["transform"]["status"] == "not_run"
+    assert not (out / "transform").exists()

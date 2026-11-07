@@ -371,3 +371,25 @@ def test_non_sensitive_url_in_a_person_table_is_not_kept_raw(tmp_path):
     assert cols['site']['privacy_role'] == 'quasi_identifier' and cols['site']['action'] == 'DROP'
     assert cols['zip']['privacy_role'] == 'quasi_identifier' and cols['zip']['action'] == 'DROP'
     assert cols['score']['action'] == 'KEEP'
+
+
+def test_embedded_identifier_released_in_a_revealing_form_warns_without_echoing(tmp_path):
+    from server.select.artifacts import check_evidence
+    path = tmp_path / 'linkage.json'
+    rel = lambda rid, col: {'relation_id': rid, 'kind': 'embedded', 'left': {'table': 'people', 'column': col},  # noqa: E731
+                            'right': None, 'evidence': {'encodes': ['SECRET-FREE-TEXT']}, 'confidence': .9,
+                            'needs_review': False}
+    path.write_text(json.dumps({'schema': 'pets.detect.linkage/1',
+                                'relations': [rel('a' * 16, 'ip'), rel('b' * 16, 'id'), rel('c' * 16, 'gone')]}))
+    tables = {'people': pd.DataFrame({'id': ['p1'], 'ip': ['10.0.0.1']})}
+    plan = {'columns': [{'table': 'people', 'column': 'ip', 'action': 'HMAC', 'method': 'ipv4_prefix'},
+                        {'table': 'people', 'column': 'id', 'action': 'HMAC', 'method': 'hmac_sha256'}],
+            'joins': [], 'subject_keys': {}}
+    lab = pd.DataFrame([label('people', 'id', 'record_key', 'PATIENT_ID'),
+                        label('people', 'ip', 'technical_identifier', 'IP_ADDRESS')])
+    errors, warnings, summary = check_evidence(plan, tables, lab, {'dataset_fingerprint': 'f' * 64,
+                                                                   '_paths': {'linkage': path}})
+    emb = [w for w in warnings if w.startswith('embedded_qi')]
+    assert len(emb) == 1 and 'people.ip' in emb[0] and 'a' * 16 in emb[0]  # the /24 keeps provider/location
+    assert not errors and summary['linkage']['embedded'] == 3
+    assert 'SECRET-FREE-TEXT' not in json.dumps([errors, warnings, summary]) and 'gone' not in json.dumps(warnings)

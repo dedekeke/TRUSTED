@@ -14,20 +14,18 @@ def test_hour_preserving_preview_floors_and_counts_bad_dates(method, expected):
     assert lost == 1
 
 
-@pytest.mark.parametrize('plan', [{'suppression': {'t': {'k': 5}}},
-                                 {'columns': [{'method': 'year_hour'}]}])
-def test_legacy_export_cannot_ignore_preview_operations(plan, tmp_path, monkeypatch):
+def test_legacy_export_command_delegates_to_the_gated_executor(tmp_path, monkeypatch):
+    """The old `server.select transform` no longer has its own export path: unmeasured plans are refused."""
     import json
     from server.select.__main__ import main
-    from server.select import transform
     from server.select.artifacts import provenance
+    data = tmp_path / 'demo'
+    data.mkdir()
+    pd.DataFrame({'id': ['1']}).to_csv(data / 't.csv', index=False)
     plan_path = tmp_path / 'plan.json'
-    plan_path.write_text(json.dumps({**plan, 'provenance': provenance(tmp_path, None)}))
-    def no_export(*args, **kwargs):
-        pytest.fail('unsupported preview plans must be rejected before export')
+    plan_path.write_text(json.dumps({'status': 'policy_valid', 'tables': {}, 'columns': [],
+                                     'suppression': {'t': {'k': 5}}, 'provenance': provenance(data, None)}))
     monkeypatch.setenv('PRIVACY_TOOL_HMAC_KEY', 'test-key')
-    monkeypatch.setattr(transform, 'apply', no_export)
     out = tmp_path / 'export'
-    with pytest.raises(SystemExit, match='complete the transform integration'):
-        main(['transform', '--data', str(tmp_path), '--plan', str(plan_path), '--out', str(out)])
-    assert not out.exists()
+    assert main(['transform', '--data', str(data), '--plan', str(plan_path), '--out', str(out), '--no-scorecard']) == 2
+    assert not (out / 'protected').exists() and (out / 'diagnostics.json').exists()
