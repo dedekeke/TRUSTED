@@ -37,11 +37,11 @@ class NameScorer:
     def vocab(self, exclude: str | None) -> set[str]:
         return set().union(*(v for d, v in self.vocab_by_ds.items() if d != exclude))
 
-    def score(self, name: str, table_names: list[str], exclude_dataset: str | None,
-              _cache: dict = {}) -> tuple[float, str]:
+    def score(self, name: str, table_names: list[str], exclude_dataset: str | None) -> tuple[float, str]:
         """Returns (name_info, short explanation)."""
         if is_code_like(name):
             return 0.0, f"'{name}' is a code, not a word"
+        _cache = self.__dict__.setdefault("_cache", {})  # per instance: scorers with different vocabularies coexist
         key = exclude_dataset
         if key not in _cache:
             _cache[key] = self.vocab(exclude_dataset)

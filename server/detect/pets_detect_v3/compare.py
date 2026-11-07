@@ -53,7 +53,7 @@ def run(root=None, llm: bool = True, cfg: Config = FINAL, tag: str = "v3") -> di
            "runs": {k: v for k, v in saved["runs"].items()}, "b1": saved.get("b1")}
     for view in ("names", "blind"):
         c = replace(cfg, view=view, tiers=(1, 2, 3) if llm else (1, 2))
-        det = DetectorV3(c, root)
+        det = DetectorV3(c, root).prefit(datasets)
         preds, times = [], {}
         for ds in datasets:
             t0 = time.time()

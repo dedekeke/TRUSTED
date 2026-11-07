@@ -8,6 +8,8 @@ The table domain can be asked first and reused (the Art. 9-aware rules need it b
 from __future__ import annotations
 
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 from pets_detect.patterns import ROLES, SUBTYPES
 from pets_detect_v2 import table_llm as T
@@ -79,8 +81,24 @@ def column_prompt(table: str, domain: str, cards: list[dict], i: int, context: s
 
 
 class TableLLMv3(T.TableLLM):
-    def __init__(self, model=None, host=None, cache_dir=".cache/v3/llm", **kw):
+    """workers: concurrent Ollama requests (DETECT_LLM_WORKERS, default 4). Ollama only runs them in parallel up to
+    its OLLAMA_NUM_PARALLEL; beyond that they queue, so a high value is harmless. 1 = the old sequential behaviour.
+    With workers > 1 the parent's calls / cache_hits counters can, rarely, miss an increment (they are only reported)."""
+
+    def __init__(self, model=None, host=None, cache_dir=".cache/v3/llm", workers: int | None = None, **kw):
         super().__init__(model, host, cache_dir, **kw)
+        self.workers = max(1, int(workers or os.environ.get("DETECT_LLM_WORKERS", 4)))
+
+    def _map(self, fn, items: list) -> list:
+        if self.workers == 1 or len(items) < 2:
+            return [fn(x) for x in items]
+        with ThreadPoolExecutor(min(self.workers, len(items))) as ex:
+            return list(ex.map(fn, items))
+
+    def map_tables(self, jobs: dict) -> dict:
+        """Run {key: zero-arg call} concurrently, keep the keys."""
+        keys = list(jobs)
+        return dict(zip(keys, self._map(lambda k: jobs[k](), keys)))
 
     def domain(self, table: str, ps: list[dict], show_names: bool, context: str = "") -> str:
         if not self.available():
@@ -97,8 +115,8 @@ class TableLLMv3(T.TableLLM):
             return {}
         cards = [column_card(i, p, None if i in ask else g, show_names) for i, (p, g) in enumerate(zip(ps, guesses))]
         answers = {}
-        for i in ask:
-            out = self._ask(column_prompt(table, domain, cards, i, context), T.COLUMN_SCHEMA)
+        outs = self._map(lambda i: self._ask(column_prompt(table, domain, cards, i, context), T.COLUMN_SCHEMA), ask)
+        for i, out in zip(ask, outs):
             if out and out.get("privacy_role") in ROLES and out.get("subtype") in SUBTYPES:
                 out["reason"] = str(out.get("evidence", ""))[:300]
                 answers[i] = out
