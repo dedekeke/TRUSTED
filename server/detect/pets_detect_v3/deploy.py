@@ -34,7 +34,7 @@ from pets_detect_v2.spans.tagger import Dictionaries, Tagger
 
 from . import __version__
 from .compare import FINAL
-from .llm_v3 import TableLLMv3
+from .jev import make_llm
 from .pipeline import Config, DetectorV3
 from .router import Router, _fit_one
 
@@ -179,7 +179,7 @@ def detector(meta: dict, state: dict, llm: bool) -> DetectorV3:
     det = DetectorV3.__new__(DetectorV3)
     det.__dict__.update({k: v for k, v in state.items() if k != "tagger"})
     det.cfg, det.root, det.data_dir, det.catalog, det.timings = cfg, None, None, None, {}
-    det.llm = TableLLMv3(cfg.llm_model) if 3 in cfg.tiers else None
+    det.llm = make_llm(cfg.llm_model) if 3 in cfg.tiers else None
     return det
 
 

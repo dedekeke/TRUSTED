@@ -126,7 +126,7 @@ def main(argv=None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--confirm", help="reviewer-confirmed labels CSV for select")
     ap.add_argument("--budget", type=int, default=50)
-    ap.add_argument("--llm", action="store_true", help="use the local LLM tier in detect (Ollama)")
+    ap.add_argument("--llm", action="store_true", help="use the local LLM tier in detect (JEV via jev27b_mlx; DETECT_LLM_BACKEND=ollama for Ollama)")
     ap.add_argument("--text-fallback", choices=["rules"])
     ap.add_argument("--allow-unapproved", action="store_true")
     ap.add_argument("--no-scorecard", action="store_true")

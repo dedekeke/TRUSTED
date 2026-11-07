@@ -40,7 +40,7 @@ The Detect step of the TRUSTED PETs pipeline. It finds what needs protecting so 
 2. **Free text.** PII spans inside text cells: `start`, `end`, `label`, `confidence`, and an `entity_id` that groups mentions of the same person, which lets Select use consistent pseudonyms.
 3. **Linkage facts.** Join keys, identifiers shared across datasets, information hidden inside identifiers, and the share of rows with k<5 on the detected quasi-identifiers.
 
-Everything runs on the local machine. The optional LLM runs in Ollama on `localhost`, so no data leaves the machine.
+Everything runs on the local machine. The optional LLM tier is [AutoTrust-JEV-27B](https://huggingface.co/netprojects/AutoTrust-JEV-27B-v1.1-mlx-4bit) (4-bit MLX), served on `localhost`, so no data leaves the machine. JEV is a decision model: it does not write text, it gives a probability for each label we offer (role, subtype, Art. 9 yes/no), and that probability is the confidence.
 
 ### Results
 
@@ -71,10 +71,18 @@ Recall on PERSON, PHONE, ADDRESS and NATIONAL_ID spans is 0.999. HEALTH-S1 requi
 cd server/detect
 pip install -r requirements.txt
 pip install -e ../../../toolkit          # organisers' pets-eval, needed for scoring
-## optional LLM tier:
-brew install ollama && ollama serve &   # or any Ollama install
-ollama pull qwen2.5:7b
 ```
+
+Optional LLM tier (Apple Silicon, ~18 GB memory; run from the folder that holds `TRUSTED_PETS_PROVING_GROUND_2026`'s `.venv`):
+
+```bash
+hf download netprojects/AutoTrust-JEV-27B-v1.1-mlx-4bit --local-dir models/AutoTrust-JEV-27B-v1.1-mlx-4bit
+python3 -m venv .venv-jev     # separate venv: mlx, mlx-vlm and transformers stay out of the detector's
+.venv-jev/bin/pip install "git+https://github.com/internet-projects/autotrust-jev27b-mlx@5ef540537b4fc38e6b1586f321d234b465040bc9"
+.venv-jev/bin/python -m jev27b_mlx serve models/AutoTrust-JEV-27B-v1.1-mlx-4bit --port 8000
+```
+
+Use the local folder, not the repo id: the server then never contacts Hugging Face. The detector finds the server at `JEV_HOST` (default `http://127.0.0.1:8000`) and refuses it unless it reports bidirectional prompt attention. Do not load the model in LM Studio, Ollama or plain `mlx_lm`: they read the prompt causally and give different answers. If the server is not running, tier 3 is skipped and tiers 1-2 still run. `DETECT_LLM_BACKEND=ollama` switches back to the previous Ollama tier (`ollama pull qwen2.5:7b`).
 
 The organisers' package (`TRUSTED_PETS_PROVING_GROUND_2026`) is found automatically in a parent folder. To point elsewhere, set `PETS_ROOT=/path/to/TRUSTED_PETS_PROVING_GROUND_2026`.
 

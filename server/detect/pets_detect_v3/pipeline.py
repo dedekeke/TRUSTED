@@ -22,7 +22,7 @@ from pets_detect.rules import Decision, context_adjust, tier1
 from pets_detect_v2.classifier import catalog_labels
 from pets_detect_v2.pipeline import GENERIC_SUBTYPES, SENSITIVE, guardrail
 
-from .llm_v3 import TableLLMv3
+from .jev import make_llm
 from .naming import NameScorer, mixed_view
 from .router import Router
 
@@ -65,7 +65,7 @@ class DetectorV3:
             train += catalog_labels(load_profiles(ds, self.data_dir), self.catalog)
         self.router = Router(train, self.catalog, cfg.router) if 2 in cfg.tiers else None
         self.names = NameScorer(self.catalog)
-        self.llm = TableLLMv3(cfg.llm_model) if 3 in cfg.tiers else None
+        self.llm = make_llm(cfg.llm_model) if 3 in cfg.tiers else None
         self.kind_of = self.catalog.groupby("subtype").data_kind.agg(lambda s: s.value_counts().index[0]).to_dict()
         a9 = self.catalog.assign(a=self.catalog.art9_special_category.eq("True"))
         self.art9_of = a9.groupby(["privacy_role", "subtype"]).a.mean().to_dict()
