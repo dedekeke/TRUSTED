@@ -336,3 +336,52 @@ def test_cli_exit_codes_and_legacy_delegation(tmp_path, measured, monkeypatch, c
     with pytest.raises(SystemExit, match="HMAC key"):
         main(["--data", str(data), "--plan", str(good), "--out", str(tmp_path / "e")])
     assert not (tmp_path / "e").exists()
+
+
+def test_entity_pseudonyms_are_consistent_within_a_group_and_restart_across_groups():
+    from server.actions import entity_numbers, redact_spans
+    texts = ["Anna met Bob", "Bob called Anna", "Anna again"]
+    spans = [[{"start": 0, "end": 4, "label": "PERSON", "entity_id": "t:c:g1:P1"},
+              {"start": 9, "end": 12, "label": "PERSON", "entity_id": "t:c:g1:P2"}],
+             [{"start": 0, "end": 3, "label": "PERSON", "entity_id": "t:c:g1:P2"},
+              {"start": 11, "end": 15, "label": "PERSON", "entity_id": "t:c:g1:P1"}],
+             [{"start": 0, "end": 4, "label": "PERSON", "entity_id": "t:c:g2:P1"}]]  # another conversation
+    numbers = entity_numbers(spans)
+    out = [redact_spans(t, s, numbers) for t, s in zip(texts, spans)]
+    assert out == ["[PERSON_1] met [PERSON_2]", "[PERSON_2] called [PERSON_1]", "[PERSON_1] again"]
+    assert redact_spans(texts[0], spans[0]) == "[PERSON] met [PERSON]"  # typed_placeholders profile
+    assert redact_spans("x", [{"start": 0, "end": 1, "label": "PERSON", "entity_id": None}], numbers) == "[PERSON]"
+
+
+def test_policy_picks_the_free_text_profile_by_trust_level():
+    from server.select.policy import candidates
+    label = {"privacy_role": "free_text", "subtype": "FREE_TEXT", "confidence": .95}
+    profile = {t: candidates(label, t, True)["rungs"][0]["params"]["profile"]
+               for t in ("internal", "contractual", "controlled_research")}
+    assert profile == {"internal": "entity_pseudonyms", "contractual": "entity_pseudonyms",
+                       "controlled_research": "typed_placeholders"}
+
+
+def test_internal_release_uses_numbered_pseudonyms_per_patient(tmp_path):
+    tables, labels, rel, req = demo()
+    req["trust_level"] = "internal"
+    data = write_data(tmp_path, tables)
+    _, fp = fingerprint(data)
+    read = read_tables(data)
+    group = {p: f"g{i}" for i, p in enumerate(sorted(set(read["visits"].pid)))}
+    spans = [span(fp, "visits", "note", i, 0, 13, entity_id=f"visits:note:{group[p]}:P1")
+             for i, p in enumerate(read["visits"].pid)]
+    lab_path = write_detect_dir(tmp_path / "detect", data, labels, spans)
+    plan = select(read, labels, rel, req, release_id="demo/vendor")
+    plan["provenance"] = A.provenance(data, A.load_manifest(lab_path, data, "demo"))
+    plan = search(read, plan, KEY)
+    note = next(c for c in plan["columns"] if c["column"] == "note")
+    assert note["params"]["profile"] == "entity_pseudonyms" and plan["outcome"]["approved"], plan.get("conflict")
+    res = run(data, plan, KEY, tmp_path / "run", tmp_path / "detect", scorecard=False)
+    assert res["status"] == "validated", res.get("errors")
+    v = read_csv(tmp_path / "run" / "protected" / "visits.csv")
+    assert v.note.str.startswith("[PERSON_1], ").all() and "Anna" not in "".join(v.note)
+    stats = json.loads((tmp_path / "run" / "transform_stats.json").read_text())
+    assert stats["redaction"] == {"visits.note": "detect_entity_pseudonyms+rules"}
+    semantics = json.loads((tmp_path / "run" / "manifest.json").read_text())["tables"]["visits"]["columns"]
+    assert "numbered placeholders" in next(c["semantics"] for c in semantics if c["name"] == "note")

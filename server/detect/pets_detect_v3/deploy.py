@@ -182,8 +182,29 @@ def detector(meta: dict, state: dict, llm: bool) -> DetectorV3:
     return det
 
 
-def _spans(tables, labels, tagger, fp: str, review_below: float, stats: dict):
-    """Yields span records; stats gets {"table.column": {"cells", "spans"}} for every column scanned."""
+def group_column(ps, table: str, column: str) -> str | None:
+    """The column that groups a text column's rows into one conversation/record (e.g. turns.conversation_id):
+    the table's only foreign-key column. None (one group per cell) when there is no FK or several, because
+    picking among several (customer_id vs agent_id) would link cells that belong to different conversations."""
+    fks = sorted({p["column"] for p in ps if p["table"] == table and p["fk_to"] and p["column"] != column})
+    return fks[0] if len(fks) == 1 else None
+
+
+def _group_ids(fp: str, table: str, key: str | None, values) -> list[str]:
+    """Opaque per-row group ids: rows sharing a non-blank key value share an id; no value ever appears."""
+    if key is None:
+        return [f"r{i}" for i in range(len(values))]
+    return [sha256(f"{fp}|{table}|{key}|{v}".encode())[:12] if str(v).strip() else f"r{i}"
+            for i, v in enumerate(values)]
+
+
+def _spans(tables, labels, tagger, fp: str, review_below: float, stats: dict, ps=None, groups: dict | None = None):
+    """Yields span records; stats gets {"table.column": {"cells", "spans"}} for every column scanned.
+
+    Entities are numbered per group: all cells of one conversation (rows sharing the table's single FK value,
+    see group_column) form one group, so a person mentioned in several turns keeps one entity_id. Without such
+    a key every cell is its own group. `groups` receives {"table.column": "table.key" or None}."""
+    groups = {} if groups is None else groups
     if tagger is not None:
         # as spans.run.name_dictionary, but from the in-memory (fingerprinted) tables
         person = labels[labels.subtype == "PERSON_NAME"]
@@ -194,20 +215,27 @@ def _spans(tables, labels, tagger, fp: str, review_below: float, stats: dict):
     for t, c in zip(text.table, text.column):
         cells = [(i, v) for i, v in enumerate(tables[t][c]) if v.strip()]
         st = stats[f"{t}.{c}"] = {"cells": len(cells), "spans": 0}
-        for k in range(0, len(cells), TEXT_BATCH):
+        key = group_column(ps or [], t, c)
+        groups[f"{t}.{c}"] = f"{t}.{key}" if key else None
+        gids = _group_ids(fp, t, key, tables[t][key].tolist() if key else tables[t][c].tolist())
+        found = {}
+        for k in range(0, len(cells), TEXT_BATCH):  # detection stays batched (bounded tagger cache)
             part = cells[k:k + TEXT_BATCH]
             if tagger is not None:
                 tagger.__dict__.pop("_cache", None)
                 tagger.precompute([v for _, v in part])
-            groups = {i: [(i, v, S.detect(v, tagger))] for i, v in part}
-            assign_entities(groups)  # one group per cell: the same value in one cell gets one entity id
-            for i, [(_, v, sp)] in groups.items():
-                st["spans"] += len(sp)
-                for s in sp:
-                    yield {"span_id": sha256(f"{fp}|{t}|{c}|{i}|{s['start']}|{s['end']}".encode())[:16],
-                           "table": t, "column": c, "row_index": i, "start": s["start"], "end": s["end"],
-                           "entity_type": s["label"], "entity_id": f"{t}:{c}:{i}:{s['entity_id']}",
-                           "confidence": s["confidence"], "needs_review": bool(s["confidence"] < review_below)}
+            found.update({i: (v, S.detect(v, tagger)) for i, v in part})
+        by_group: dict[str, list] = {}
+        for i, (v, sp) in found.items():  # row order within each group
+            by_group.setdefault(gids[i], []).append((i, v, sp))
+        assign_entities(by_group)  # the same value in one group (conversation or cell) gets one entity id
+        for i, (v, sp) in found.items():
+            st["spans"] += len(sp)
+            for s in sp:
+                yield {"span_id": sha256(f"{fp}|{t}|{c}|{i}|{s['start']}|{s['end']}".encode())[:16],
+                       "table": t, "column": c, "row_index": i, "start": s["start"], "end": s["end"],
+                       "entity_type": s["label"], "entity_id": f"{t}:{c}:{gids[i]}:{s['entity_id']}",
+                       "confidence": s["confidence"], "needs_review": bool(s["confidence"] < review_below)}
     if tagger is not None:
         tagger.__dict__.pop("_cache", None)
 
@@ -270,8 +298,9 @@ def infer(model_dir, data, out, llm: bool = False, model_sha256: str | None = No
     out.mkdir(parents=True)
     labels.to_csv(out / "labels.csv", index=False)
     span_stats: dict = {}
+    span_groups: dict = {}
     with (out / "spans.jsonl").open("w") as fh:
-        for s in _spans(tables, labels, state["tagger"], fp, det.cfg.review_below, span_stats):
+        for s in _spans(tables, labels, state["tagger"], fp, det.cfg.review_below, span_stats, ps, span_groups):
             fh.write(json.dumps(s) + "\n")
     (out / "linkage.json").write_text(json.dumps(_linkage(ps, tables, labels, fp), indent=1))
     art = lambda f, **kw: {"file": f, "sha256": sha256((out / f).read_bytes()), **kw}  # noqa: E731
@@ -283,7 +312,7 @@ def infer(model_dir, data, out, llm: bool = False, model_sha256: str | None = No
                      "config": asdict(det.cfg)},
         "label_vocabulary": meta["label_vocabulary"],
         "artifacts": {"labels": art("labels.csv"), "spans": art("spans.jsonl", schema="pets.detect.spans/1",
-                                                                 columns=span_stats),
+                                                                 columns=span_stats, groups=span_groups),
                       "linkage": art("linkage.json")},
         "created_at": datetime.now(timezone.utc).isoformat()}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))

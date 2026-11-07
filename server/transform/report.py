@@ -30,6 +30,9 @@ SEMANTICS = {
 
 
 def describe(c: dict) -> str:
+    if c.get("method") == "redact_spans" and (c.get("params") or {}).get("profile") == "entity_pseudonyms":
+        return ("free text with identifiers replaced by numbered placeholders such as [PERSON_1]; numbers are "
+                "consistent within one conversation/record and restart in the next, so they do not link records")
     if c["action"] in ("KEEP", "DROP"):
         return {"KEEP": "released unchanged", "DROP": "not released"}[c["action"]]
     return SEMANTICS.get(c.get("method"), f"{c['action']}/{c.get('method')}")

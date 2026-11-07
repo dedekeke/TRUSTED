@@ -190,3 +190,37 @@ def test_benchmark_scores_against_catalog(pkg, tmp_path):
     deploy.infer(model, root / "data" / "zz_gamma", tmp_path / "d")
     r = deploy.benchmark(root, tmp_path / "d" / "labels.csv")
     assert r["n_fields"] == 12 and 0 <= r["macro_f1"] <= 1
+
+
+def _conversation_inputs():
+    turns = pd.DataFrame({"turn_id": ["t1", "t2", "t3", "t4"], "conversation_id": ["c1", "c1", "c2", "c1"],
+                          "text": ["call me at 040 1234567", "yes 040 1234567 again", "040 1234567 here",
+                                   "or 050 7654321"]})
+    labels = pd.DataFrame([{"table": "turns", "column": "text", "privacy_role": "free_text", "subtype": "FREE_TEXT"},
+                           {"table": "turns", "column": "conversation_id", "privacy_role": "technical_identifier",
+                            "subtype": "OTHER"}])
+    ps = [{"table": "turns", "column": "turn_id", "fk_to": []},
+          {"table": "turns", "column": "conversation_id", "fk_to": ["conversations.conversation_id"]},
+          {"table": "turns", "column": "text", "fk_to": []}]
+    return {"turns": turns}, labels, ps
+
+
+def test_entities_are_numbered_per_conversation_not_per_cell():
+    tables, labels, ps = _conversation_inputs()
+    stats, groups = {}, {}
+    spans = list(deploy._spans(tables, labels, None, "f" * 64, 0.6, stats, ps, groups))
+    ids = {s["row_index"]: s["entity_id"] for s in spans if s["entity_type"] == "PHONE"}
+    assert ids[0] == ids[1]                      # same number, two turns of conversation c1: one entity
+    assert ids[0] != ids[2]                      # same number in conversation c2: not linkable
+    assert ids[3] != ids[0] and ids[3].split(":")[2] == ids[0].split(":")[2]  # other number, same group
+    assert groups == {"turns.text": "turns.conversation_id"}
+    assert all("c1" not in s["entity_id"] and "040" not in s["entity_id"] for s in spans)  # opaque ids
+
+
+def test_no_or_ambiguous_group_key_keeps_one_group_per_cell():
+    tables, labels, ps = _conversation_inputs()
+    ps[0]["fk_to"] = ["other.turn_id"]           # two FK columns: customer vs conversation is ambiguous
+    groups = {}
+    spans = list(deploy._spans(tables, labels, None, "f" * 64, 0.6, {}, ps, groups))
+    ids = {s["row_index"]: s["entity_id"] for s in spans if s["entity_type"] == "PHONE"}
+    assert ids[0] != ids[1] and groups == {"turns.text": None}

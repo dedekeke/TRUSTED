@@ -130,10 +130,28 @@ def redact(text: str, row_values: dict | None = None) -> str:
     return NAME_PAIR_RX.sub("[PERSON]", text)
 
 
-def redact_spans(text: str, spans: list[dict]) -> str:
-    """Replace validated Detect spans (character offsets into the original text) with typed placeholders.
+def entity_numbers(spans_per_row: list[list[dict]]) -> dict[str, int]:
+    """{entity_id: n} numbering each Detect entity by first appearance within its group (conversation/record).
 
-    Overlapping spans are merged and take the first span's label. Offsets must already be validated."""
+    Detect entity ids look like "table:column:<group id>:<local id>"; everything before the last ":" is the group,
+    so numbering restarts per conversation and the same person keeps one number across its turns."""
+    numbers, counters = {}, {}
+    for row in spans_per_row:
+        for sp in sorted(row or [], key=lambda x: x["start"]):
+            e = sp.get("entity_id")
+            if not isinstance(e, str) or ":" not in e or e in numbers:
+                continue
+            k = (e.rsplit(":", 1)[0], str(sp.get("label", "")).upper())
+            counters[k] = counters.get(k, 0) + 1
+            numbers[e] = counters[k]
+    return numbers
+
+
+def redact_spans(text: str, spans: list[dict], numbers: dict[str, int] | None = None) -> str:
+    """Replace validated Detect spans (character offsets into the original text) with placeholders:
+    [LABEL] (typed_placeholders) or [LABEL_n] when `numbers` gives the span's entity a number (entity_pseudonyms).
+
+    Overlapping spans are merged and take the first span's label and entity. Offsets must already be validated."""
     if not isinstance(text, str) or not text or not spans:
         return text
     merged: list[list] = []
@@ -141,10 +159,12 @@ def redact_spans(text: str, spans: list[dict]) -> str:
         if merged and sp["start"] < merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], sp["end"])
         else:
-            merged.append([sp["start"], sp["end"], sp.get("label", "")])
-    for start, end, label in reversed(merged):
+            merged.append([sp["start"], sp["end"], sp.get("label", ""), sp.get("entity_id")])
+    for start, end, label, entity in reversed(merged):
         label = str(label).upper()
-        text = text[:start] + f"[{label if PLACEHOLDER_RX.fullmatch(label) else 'PII'}]" + text[end:]
+        label = label if PLACEHOLDER_RX.fullmatch(label) else "PII"
+        n = (numbers or {}).get(entity)
+        text = text[:start] + (f"[{label}_{n}]" if n else f"[{label}]") + text[end:]
     return text
 
 
@@ -169,7 +189,8 @@ def apply_column(s: pd.Series, d: dict, key: bytes, release_id: str, df: pd.Data
         ids = [c for c in (plan_columns or []) if c["table"] == d.get("table") and c.get("subtype") in ROW_VALUE_LABELS]
         recs = df[[c["column"] for c in ids]].to_dict("records") if df is not None else [{}] * len(s)
         rows = [{ROW_VALUE_LABELS[c["subtype"]]: [r[c["column"]]] for c in ids} for r in recs]
-        texts = s.tolist() if spans is None else [redact_spans(t, sp) for t, sp in zip(s.tolist(), spans)]
+        numbers = entity_numbers(spans) if spans is not None and p.get("profile") == "entity_pseudonyms" else None
+        texts = s.tolist() if spans is None else [redact_spans(t, sp, numbers) for t, sp in zip(s.tolist(), spans)]
         out = pd.Series([redact(t, r) for t, r in zip(texts, rows)], index=s.index)
     elif method in TIME_FORMATS:
         out = _time(s, method)
@@ -287,7 +308,10 @@ def execute(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, spans: dict
             if d["action"] == "REDACT":
                 if row_spans is None and not text_fallback:
                     raise ValueError(f"{ref}: free text needs validated Detect spans (or an explicit rule fallback)")
-                stats["redaction"][ref] = "detect_spans+rules" if row_spans is not None else "rules_only"
+                profile = (d.get("params") or {}).get("profile")
+                stats["redaction"][ref] = ("rules_only" if row_spans is None else
+                                           "detect_entity_pseudonyms+rules" if profile == "entity_pseudonyms"
+                                           else "detect_spans+rules")
             v, lost = apply_column(src[d["column"]], d, key, plan.get("release_id", ""), src, cols, row_spans)
             if v is not None:
                 res[d["column"]] = v
