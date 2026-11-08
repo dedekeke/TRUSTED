@@ -180,3 +180,29 @@ def test_select_rejection_is_reported_with_its_reason(outside_server, root, monk
     sel = next(s for s in wait(outside_server, jid)["steps"] if s["name"] == "select")
     assert sel["status"] == "failed" and "TypeError" not in (sel["error"] or "")
     assert "cannot find the challenge package root" in sel["error"]
+
+
+def test_cancel_stops_before_the_next_stage(root):  # noqa: F811
+    import threading
+    started, release = threading.Event(), threading.Event()
+
+    def slow_detect(model, data, out):
+        started.set()
+        release.wait(10)
+        fake_detect(model, data, out)
+    httpd = server_api.serve(server_api.Api(root, root / "model", root / "runs", detect=slow_detect), 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_port}"
+    try:
+        jid = call(base, "/api/jobs", {"dataset": "demo"})[1]["id"]
+        call(base, f"/api/jobs/{jid}/start", {"spec": SPEC_OK, "no_scorecard": True})
+        assert started.wait(10)
+        assert call(base, f"/api/jobs/{jid}/cancel", {})[1]["state"] == "running"  # detect still finishes
+        release.set()
+        st = wait(base, jid)
+        assert st["state"] == "cancelled", st
+        assert steps(st)["detect"] == "success" and steps(st)["select"] == "skipped"
+        assert call(base, f"/api/jobs/{jid}/cancel", {})[1]["state"] == "cancelled"  # idempotent once stopped
+    finally:
+        release.set()
+        httpd.shutdown()

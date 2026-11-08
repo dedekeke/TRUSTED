@@ -18,11 +18,12 @@ export class ApiError extends Error {
 
 const base = appConfig.apiBaseUrl.replace(/\/$/, '')
 
-async function request<T>(path: string, body?: unknown): Promise<T> {
+async function request<T>(path: string, body?: unknown, keepalive = false): Promise<T> {
   const res = await fetch(`${base}/api${path}`, {
     method: body === undefined ? 'GET' : 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
+    keepalive,
   })
   const data = await res.json().catch(() => null)
   if (!res.ok) throw new ApiError(data?.error?.code ?? `http_${res.status}`, data?.error?.message ?? res.statusText)
@@ -57,6 +58,8 @@ export const jobs = {
   start: (id: string, options: StartOptions) => request<Job>(`${jobPath(id)}/start`, options),
   confirm: (id: string, confirmations: Confirmation[], allowDowngrade = false) =>
     request<Job>(`${jobPath(id)}/confirm`, { confirmations, allow_downgrade: allowDowngrade }),
+  /** keepalive lets the request finish while the page unloads (refresh / close). */
+  cancel: (id: string, keepalive = false) => request<Job>(`${jobPath(id)}/cancel`, {}, keepalive),
   step: (id: string, step: StepName) => request<StepView>(`${jobPath(id)}/steps/${step}`),
   log: (id: string, step: StepName) => request<{ step: StepName; log: string }>(`${jobPath(id)}/steps/${step}/log`),
   downloadUrl: (id: string) => `${base}/api${jobPath(id)}/download`,
