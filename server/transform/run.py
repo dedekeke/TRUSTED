@@ -260,8 +260,10 @@ def run(data_dir, plan: dict, key: bytes, out_dir, detect_dir=None, text_fallbac
     if scorecard:
         try:
             from pets_eval.scorecard import run_scorecard
-            rep = run_scorecard(data_dir, out_root / "evaluation", scenario=plan.get("scenario"),
-                                out_dir=out_root / "reports", max_adversary=max_adversary)
+            from server.guard import evaluation
+            with evaluation():
+                rep = run_scorecard(data_dir, out_root / "evaluation", scenario=plan.get("scenario"),
+                                    out_dir=out_root / "reports", max_adversary=max_adversary)
             scorecard_status = {"status": "run", "files": ["reports/scorecard.json", "reports/scorecard.html"],
                                 "summary": rep.get("summary"),
                                 "note": "toolkit assessment for the report only; it never feeds back into selection"}

@@ -206,3 +206,28 @@ def test_cancel_stops_before_the_next_stage(root):  # noqa: F811
     finally:
         release.set()
         httpd.shutdown()
+
+
+def test_scorecard_runs_under_the_guard(server, root):  # noqa: F811
+    refused = server_api.guard(root)
+    jid = call(server, "/api/jobs", {"dataset": "demo"})[1]["id"]
+    call(server, f"/api/jobs/{jid}/start", {"spec": SPEC_OK})
+    st = wait(server, jid)
+    assert steps(st)["transform"] == "success" and steps(st)["evaluate"] == "success", st
+    assert refused == []
+    with pytest.raises(PermissionError):
+        open(root / "metadata" / "field_catalog.csv")
+
+
+def test_scorecard_error_is_shown_on_evaluate(server, monkeypatch):
+    import pets_eval.scorecard
+
+    def broken(*a, **kw):
+        raise RuntimeError("scorer exploded")
+    monkeypatch.setattr(pets_eval.scorecard, "run_scorecard", broken)
+    jid = call(server, "/api/jobs", {"dataset": "demo"})[1]["id"]
+    call(server, f"/api/jobs/{jid}/start", {"spec": SPEC_OK})
+    st = wait(server, jid)
+    ev = next(s for s in st["steps"] if s["name"] == "evaluate")
+    assert steps(st)["transform"] == "success" and ev["status"] == "failed"
+    assert "scorer exploded" in ev["error"] and st["download"] is True
