@@ -10,28 +10,25 @@ import re
 
 import pandas as pd
 
-KEY_UNIQUE = 0.99  # non-blank values distinct at least this share
+KEY_UNIQUE = 0.99
 KEY_MAX_BLANK = 0.01
-COVERAGE = 0.95  # child distinct values found in the parent key
-MIN_CHILD_DISTINCT = 20  # fewer distinct values looks like a category, not a reference
-SHAPE_AGREE = 0.85  # below COVERAGE so the format filter never rejects what coverage would accept; orphans may differ
+COVERAGE = 0.95
+MIN_CHILD_DISTINCT = 20
+SHAPE_AGREE = 0.85
 SUBJECT_MAX_DISTINCT = 0.95
 SAMPLE = 200
-PARENT_SAMPLE = 2000  # parent values whose shapes the child sample is compared against
+PARENT_SAMPLE = 2000
 KEY_ROLES = {"record_key", "technical_identifier", "direct_identifier"}
 NOT_ID_SUBTYPES = {"DATE", "TIMESTAMP", "BIRTH_DATE", "MEASUREMENT", "FINANCIAL_DATA", "GPS_COORDINATE", "AGE",
-                   "PERSON_NAME", "STREET_ADDRESS", "FREE_TEXT"}  # EMAIL stays: UPNs are real join keys
-# S2: a payment card, a bank account and a licence plate each single out their holder (a person or household)
+                   "PERSON_NAME", "STREET_ADDRESS", "FREE_TEXT"}
 OWNED_IDS = {"PAYMENT_CARD", "IBAN", "LICENSE_PLATE"}
 PERSON_IDS = {"CUSTOMER_ID", "PATIENT_ID", "STUDENT_ID", "EMPLOYEE_ID", "CARD_ID", "ACCOUNT_ID"} | OWNED_IDS
-ACCOUNT_NAMES = {"EMAIL", "USERNAME"}  # lowest subject tier
-# one row per card/account/vehicle, not per person, when an owner column repeats
+ACCOUNT_NAMES = {"EMAIL", "USERNAME"}
 HOLDINGS = {"CARD_ID", "ACCOUNT_ID"} | OWNED_IDS
-# S1: direct identifiers that, when (almost) unique per row, show that each row of a table is one person
 PERSON_ROW_IDS = {"NATIONAL_ID", "EMAIL", "PHONE"}
-PERSON_ROW_UNIQUE = 0.95   # distinct share among non-blank values
-PERSON_ROW_PRESENT = 0.5   # non-blank share of rows
-STAFF_IDS = {"EMPLOYEE_ID"}  # a person, but not the data subject when a joined subject exists
+PERSON_ROW_UNIQUE = 0.95
+PERSON_ROW_PRESENT = 0.5
+STAFF_IDS = {"EMPLOYEE_ID"}
 ID_LIKE = re.compile(r"^(?=.*\d)\S{3,40}$")
 DECIMAL = re.compile(r"^[-+]?\d+[.,]\d+$")
 DATE_SHAPE = re.compile(r"^\d{1,4}[-./]\d{1,2}([-./]\d{1,4})?([ T]|$)|^\d{4}-?W\d{1,2}$")
@@ -52,9 +49,8 @@ def _share(vals: list[str], test) -> float:
 
 
 def _profile(s: pd.Series) -> dict:
-    # Count raw values first, then trim the (far fewer) distinct ones: cheap on 1.6M-row columns.
     vc = s.value_counts(sort=False)
-    counts = pd.Series(vc.to_numpy(), index=vc.index.astype(str).str.strip()).groupby(level=0).sum()  # sorted index
+    counts = pd.Series(vc.to_numpy(), index=vc.index.astype(str).str.strip()).groupby(level=0).sum()
     blank = int(counts.pop("")) if "" in counts.index else 0
     vals = counts.index
     lens = vals.str.len()
@@ -100,7 +96,6 @@ def _format_agree(parent: dict, child: dict) -> float:
 
 
 def _confidence(coverage: float, agree: float, distinct: int) -> float:
-    # coverage dominates; agreeing shapes over many distinct values add the rest
     return round(coverage * (0.7 + 0.3 * agree * min(1.0, distinct / 100)), 3)
 
 
@@ -175,8 +170,6 @@ def _subjects(tables, prof, ref_label, joins, key_refs) -> dict[str, list[str]]:
             cand = (sub in STAFF_IDS, tier, i, ref, sub)
             if ref in key_refs:
                 own.append(cand)
-            # national ids are checksum-validated by the detector and may carry a prefix ('HETU 0101...');
-            # person ids must look like ids; account names (often digit-free) must not contain spaces
             elif p["distinct"] >= MIN_CHILD_DISTINCT and _repeats(p) and \
                     (tier == 0 or (tier == 1 and p["id_values"]) or (tier == 2 and not p["spaces"])):
                 ranked.append(cand)
@@ -188,7 +181,7 @@ def _subjects(tables, prof, ref_label, joins, key_refs) -> dict[str, list[str]]:
         elif (row_key := _person_row_key(t, df, prof, ref_label, key_refs)):
             local[t] = [row_key]
     paths = dict(local)
-    for _ in tables:  # inherit through joins until nothing changes; shortest path, then join order
+    for _ in tables:
         changed = False
         for j in sorted(joins.values(), key=lambda j: (j["child"], j["parent"])):
             ct, pt = j["child"].split(".", 1)[0], j["parent"].split(".", 1)[0]
@@ -196,13 +189,13 @@ def _subjects(tables, prof, ref_label, joins, key_refs) -> dict[str, list[str]]:
                 up = paths[pt]
                 cand = [j["child"], *up] if up[0] == j["parent"] else [j["child"], j["parent"], *up]
                 if ct in {r.split(".", 1)[0] for r in up}:
-                    continue  # cycle back through this table
+                    continue
                 if ct not in paths or len(cand) < len(paths[ct]):
                     paths[ct], changed = cand, True
         if not changed:
             break
     for t, p in weak.items():
-        paths.setdefault(t, p)  # a local staff id or account name only when no subject is reachable
+        paths.setdefault(t, p)
     return paths
 
 
@@ -232,14 +225,13 @@ def discover(tables: dict[str, pd.DataFrame], labels: pd.DataFrame | None = None
             agree = _format_agree(parent, child)
             if agree < SHAPE_AGREE:
                 continue
-            # cheap sample containment before the full set test
             if _share(child["sample"], pset.__contains__) < COVERAGE - .1:
                 continue
             m = _measure_join(parent, child)
             if m["coverage"] >= COVERAGE:
                 joins[(k["column"], ref)] = {"parent": k["column"], "child": ref, **m,
                                              "confidence": _confidence(m["coverage"], agree, child["distinct"])}
-    for (p, c) in list(joins):  # two keys covering each other: keep the larger side as parent
+    for (p, c) in list(joins):
         if (c, p) in joins and (prof[p]["distinct"], c) < (prof[c]["distinct"], p):
             del joins[(p, c)]
 

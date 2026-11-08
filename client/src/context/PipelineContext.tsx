@@ -29,10 +29,6 @@ export interface PipelineState {
 // eslint-disable-next-line react-refresh/only-export-components
 export const PipelineContext = createContext<PipelineState | null>(null)
 
-/**
- * Pipeline state. Policies are *derived* from detections + scenario, with the analyst's manual overrides on top.
- * Any change to an input clears the protected result, so stale output is never shown.
- */
 export function PipelineProvider({ children }: { children: ReactNode }) {
   const [dataset, setDataset] = useState<Dataset | null>(null)
   const [detections, setDetections] = useState<ColumnDetection[]>([])
@@ -43,7 +39,6 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
   const [running, setRunning] = useState(false)
   const [key, setKey] = useState<CryptoKey | null>(null)
 
-  // one secret HMAC key per browser session; it is never shown, stored or exported
   useEffect(() => {
     newSessionKey().then(setKey)
   }, [])
@@ -63,7 +58,7 @@ export function PipelineProvider({ children }: { children: ReactNode }) {
     setDetections(detectDataset(ds.columns, ds.rows))
     setOverrides({})
     setResult(null)
-    // suggest the first scenario of the matching proving-ground dataset
+
     if (ds.dataset && scenario?.dataset !== ds.dataset)
       setScenario(SCENARIOS.find((s) => s.dataset === ds.dataset) ?? null)
   }

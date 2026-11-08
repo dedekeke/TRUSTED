@@ -26,7 +26,6 @@ interface Row {
   subtype: string
 }
 
-/** Confirm (or correct) the labels that block selection; the job then continues from Select. */
 export default function ReviewForm({ job, table, onDone }: { job: Job; table: ViewTable; onDone: (j: Job) => void }) {
   const [rows, setRows] = useState<Row[]>(() =>
     table.rows.map((r, i) => ({

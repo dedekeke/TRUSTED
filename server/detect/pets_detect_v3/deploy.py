@@ -34,7 +34,7 @@ from pets_detect_v2.spans.tagger import Dictionaries, Tagger
 
 from . import __version__
 from .compare import FINAL
-from .llm_v3 import TableLLMv3
+from .jev import make_llm
 from .pipeline import Config, DetectorV3
 from .router import Router, _fit_one
 
@@ -46,7 +46,7 @@ SUBJECT_SUBTYPES = {"NATIONAL_ID", "PATIENT_ID", "CUSTOMER_ID", "EMPLOYEE_ID", "
                     "CARD_ID", "EMAIL", "PHONE"}
 TRUST_WARNING = ("WARNING: model hash not pinned (--model-sha256 / DETECT_MODEL_SHA256): trusting the model.json next "
                  "to model.pkl. model.pkl is a pickle and runs code when loaded; pin the hash of a model you trained.")
-TEXT_BATCH = 2000  # tagger token probabilities are cached per batch; bounded memory on large note tables
+TEXT_BATCH = 2000
 
 
 def sha256(b: bytes) -> str:
@@ -96,7 +96,6 @@ def _strip_raw(r: Router) -> None:
 
 
 def label_vocabulary(pairs) -> list[list[str]]:
-    # rules, recall bias and context adjustment combine roles and subtypes freely, so any role can carry any subtype
     subs = set(SUBTYPES) | {s for _, s in pairs}
     return [[r, s] for r in ROLES for s in sorted(subs)]
 
@@ -125,7 +124,7 @@ def train_tagger(root, labelled: list[str], catalog: pd.DataFrame, seed: int = 0
         tagger.precompute([x["text"] for x in dev])
         tagger.tune_threshold(dev, lambda t: S._score(dev, lambda s: S.detect(s, t))[0]["micro"]["f2"])
     tagger.__dict__.pop("_cache", None)
-    tagger.d = None  # the name dictionary (real names) is rebuilt from the input data at inference, never saved
+    tagger.d = None
     return tagger
 
 
@@ -133,7 +132,7 @@ def train(root, out, cfg: Config = FINAL) -> dict:
     out = _fresh(out)
     det = DetectorV3(replace(cfg, tiers=(1, 2)), root)
     r = det.router
-    r.cache = None  # never bake cwd-relative cached pickles into the model
+    r.cache = None
     det.prefit(det.labelled)
     lr = {d: r._value_model(d) for d in det.labelled}
     lr[None] = _fit_one(*r._fit_args(None))
@@ -179,7 +178,7 @@ def detector(meta: dict, state: dict, llm: bool) -> DetectorV3:
     det = DetectorV3.__new__(DetectorV3)
     det.__dict__.update({k: v for k, v in state.items() if k != "tagger"})
     det.cfg, det.root, det.data_dir, det.catalog, det.timings = cfg, None, None, None, {}
-    det.llm = TableLLMv3(cfg.llm_model) if 3 in cfg.tiers else None
+    det.llm = make_llm(cfg.llm_model) if 3 in cfg.tiers else None
     return det
 
 
@@ -207,7 +206,6 @@ def _spans(tables, labels, tagger, fp: str, review_below: float, stats: dict, ps
     a key every cell is its own group. `groups` receives {"table.column": "table.key" or None}."""
     groups = {} if groups is None else groups
     if tagger is not None:
-        # as spans.run.name_dictionary, but from the in-memory (fingerprinted) tables
         person = labels[labels.subtype == "PERSON_NAME"]
         tagger.d = Dictionaries(last={w.lower() for t, c in zip(person.table, person.column)
                                       for v in set(tables[t][c]) for w in v.replace(",", " ").split()
@@ -220,16 +218,16 @@ def _spans(tables, labels, tagger, fp: str, review_below: float, stats: dict, ps
         groups[f"{t}.{c}"] = f"{t}.{key}" if key else None
         gids = _group_ids(fp, t, key, tables[t][key].tolist() if key else tables[t][c].tolist())
         found = {}
-        for k in range(0, len(cells), TEXT_BATCH):  # detection stays batched (bounded tagger cache)
+        for k in range(0, len(cells), TEXT_BATCH):
             part = cells[k:k + TEXT_BATCH]
             if tagger is not None:
                 tagger.__dict__.pop("_cache", None)
                 tagger.precompute([v for _, v in part])
             found.update({i: (v, S.detect(v, tagger)) for i, v in part})
         by_group: dict[str, list] = {}
-        for i, (v, sp) in found.items():  # row order within each group
+        for i, (v, sp) in found.items():
             by_group.setdefault(gids[i], []).append((i, v, sp))
-        assign_entities(by_group)  # the same value in one group (conversation or cell) gets one entity id
+        assign_entities(by_group)
         for i, (v, sp) in found.items():
             st["spans"] += len(sp)
             for s in sp:
@@ -271,11 +269,10 @@ def _linkage(ps, tables, labels, fp: str) -> dict:
                          "distinct": int(filled.nunique()),
                          "rows_per_value": round(len(filled) / max(filled.nunique(), 1), 3)},
                         row.confidence, row.needs_review))
-    # information hidden inside an identifier (a HETU encodes birth date and sex): fixed descriptions, no values
     for row in labels[labels.subtype.isin(list(EMBEDDED))].itertuples():
         r = rel("embedded", (row.table, row.column), None, {"encoded_attributes": len(EMBEDDED[row.subtype])},
-                row.confidence, row.needs_review)  # evidence stays numeric (contract v1)
-        r["encodes"] = list(EMBEDDED[row.subtype])  # fixed descriptions from the detector, never data values
+                row.confidence, row.needs_review)
+        r["encodes"] = list(EMBEDDED[row.subtype])
         rels.append(r)
     return {"schema": "pets.detect.linkage/1", "relations": rels}
 
@@ -292,7 +289,6 @@ def infer(model_dir, data, out, llm: bool = False, model_sha256: str | None = No
     fp = sha256("\n".join(f"{t}:{shas[t]}" for t in sorted(shas)).encode())
 
     det = detector(meta, state, llm)
-    # profile exactly the fingerprinted bytes, read as profiler.load_dataset() does
     sample = {t: pd.read_csv(io.BytesIO(b), dtype=str, nrows=SAMPLE_ROWS, keep_default_na=False, na_values=[""])
               for t, b in raw.items()}
     ps = profile_dataset(data.name, data, tables=sample)

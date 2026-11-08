@@ -33,7 +33,6 @@ class TestNaming(unittest.TestCase):
                            self.s.score("sentiment", ["sentiment"], "zzz")[0])
 
     def test_vocabulary_excludes_the_scored_dataset(self):
-        # 'arrival' only exists in dataset a: scoring dataset a must not count it as known
         a = self.s.score("arrival_mode", ["arrival_mode"], "a")[0]
         b = self.s.score("arrival_mode", ["arrival_mode"], "b")[0]
         self.assertLess(a, b)

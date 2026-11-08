@@ -121,7 +121,7 @@ class LocalLLM:
                 return None
             f.write_text(json.dumps(out, ensure_ascii=False))
         role, st = out.get("privacy_role"), out.get("subtype")
-        if role not in ROLES or st not in SUBTYPES:  # validate even though the schema should prevent it
+        if role not in ROLES or st not in SUBTYPES:
             return None
         conf = float(out.get("confidence", .5))
         return Decision(role, st, max(0.0, min(conf, 1.0)), str(out.get("reason", ""))[:300], "llm")

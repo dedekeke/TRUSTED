@@ -6,7 +6,8 @@
 
 Each stage writes its own subdirectory (detect/, select/, search/, transform/) through the stage's own CLI, so
 every gate, binding check and issue code applies exactly as when the stages are run by hand. The chain stops at
-the first stage that does not hand over (blocked selection, unapproved search without --allow-unapproved).
+the first stage that does not hand over (blocked selection; a public release whose search is not approved, without
+--allow-unapproved). Missed targets on a non-public release only warn: the export is marked NOT_APPROVED.
 pipeline.json records each stage's exit code, status and artifact digests. The HMAC key comes from
 PRIVACY_TOOL_HMAC_KEY and is never written.
 """
@@ -23,7 +24,7 @@ from pathlib import Path
 DETECT_SRC = Path(__file__).resolve().parent / "detect"
 KEY_ENV = "PRIVACY_TOOL_HMAC_KEY"
 STAGES = ("detect", "select", "search", "transform")
-# The one source of run parameters shared by this CLI and server.api, so a UI run equals a CLI run.
+WARN_STATUSES = {"target_unmet", "budget_exhausted"}
 DEFAULTS = {"budget": 50, "tau": 0.8, "llm": False, "text_fallback": None, "allow_unapproved": False,
             "no_scorecard": False}
 
@@ -37,15 +38,20 @@ def _status(path: Path) -> dict:
         return {}
     plan = json.loads(path.read_text())
     return {"status": plan.get("status"), "approved": (plan.get("outcome") or {}).get("approved"),
-            "plan_sha256": _sha(path)}
+            "trust_level": plan.get("trust_level"), "plan_sha256": _sha(path)}
+
+
+def warn_only(st: dict) -> bool:
+    """Missed targets on a non-public release: warn and export marked NOT_APPROVED; a public release stops."""
+    return not st.get("approved") and st.get("status") in WARN_STATUSES and st.get("trust_level") != "public"
 
 
 def _detect(a, out: Path, detect_fn=None) -> dict:
-    if detect_fn is not None:  # injected detector (tests); it writes a contract-v1 detect dir
+    if detect_fn is not None:
         detect_fn(a.model, a.data, out)
         m = json.loads((out / "manifest.json").read_text())
     else:
-        if str(DETECT_SRC) not in sys.path:  # detect packages live in server/detect (not an importable package path)
+        if str(DETECT_SRC) not in sys.path:
             sys.path.insert(0, str(DETECT_SRC))
         from pets_detect_v3 import deploy
         m = deploy.infer(a.model, a.data, out, llm=a.llm, model_sha256=a.model_sha256)
@@ -65,7 +71,7 @@ def run(a, on_step=None, detect_fn=None, start: str = "detect", attempt: int = 1
     detect/ is reused. Behaviour of every stage is the stage CLI's own."""
     from server.select.__main__ import main as select_main
     from server.transform.__main__ import main as transform_main
-    for k, v in DEFAULTS.items():  # namespaces built by callers (server.api) may omit defaulted options
+    for k, v in DEFAULTS.items():
         if not hasattr(a, k):
             setattr(a, k, v)
     out = Path(a.out)
@@ -128,8 +134,9 @@ def run(a, on_step=None, detect_fn=None, start: str = "detect", attempt: int = 1
                                "--out", str(sea), "--budget", str(a.budget), "--tau", str(a.tau),
                                "--detect", str(det)])
     st = _status(sea / "decisions.json")
-    record["stages"]["search"] = note("search", {"exit": code, "dir": sea.name, **st})
-    if not st.get("approved") and not a.allow_unapproved:
+    warned = warn_only(st)
+    record["stages"]["search"] = note("search", {"exit": code, "dir": sea.name, **st, "warning": warned})
+    if not st.get("approved") and not a.allow_unapproved and not warned:
         record["stages"]["transform"] = note("transform", {
             "exit": None, "status": "not_run",
             "reason": f"search status {st.get('status')}, approved={st.get('approved')}; "
@@ -139,7 +146,7 @@ def run(a, on_step=None, detect_fn=None, start: str = "detect", attempt: int = 1
     note("transform", {"status": "running"})
     argv = ["--data", a.data, "--plan", str(sea / "decisions.json"), "--out", str(tra), "--detect", str(det)]
     argv += ["--text-fallback", a.text_fallback] if a.text_fallback else []
-    argv += ["--allow-unapproved"] if a.allow_unapproved else []
+    argv += ["--allow-unapproved"] if a.allow_unapproved or warned else []
     argv += ["--no-scorecard"] if a.no_scorecard else []
     code = _call(transform_main, argv)
     man = tra / "manifest.json"
@@ -154,7 +161,7 @@ def run(a, on_step=None, detect_fn=None, start: str = "detect", attempt: int = 1
 def _call(fn, argv) -> int:
     try:
         return int(fn(argv) or 0)
-    except SystemExit as e:  # stage CLIs exit with a message on argument/environment errors
+    except SystemExit as e:
         if e.code not in (None, 0) and not isinstance(e.code, int):
             print(e.code, file=sys.stderr)
         return e.code if isinstance(e.code, int) else 1
@@ -174,7 +181,7 @@ def main(argv=None) -> int:
     ap.add_argument("--budget", type=int, default=DEFAULTS["budget"])
     ap.add_argument("--tau", type=float, default=DEFAULTS["tau"],
                     help="minimum task score as a share of its unsearched score (search)")
-    ap.add_argument("--llm", action="store_true", help="use the local LLM tier in detect (Ollama)")
+    ap.add_argument("--llm", action="store_true", help="use the local LLM tier in detect (JEV via jev27b_mlx; DETECT_LLM_BACKEND=ollama for Ollama)")
     ap.add_argument("--text-fallback", choices=["rules"])
     ap.add_argument("--allow-unapproved", action="store_true")
     ap.add_argument("--no-scorecard", action="store_true")

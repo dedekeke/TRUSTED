@@ -11,7 +11,6 @@ interface Props {
   series: MetricSeries[]
 }
 
-/** Grouped horizontal bars: one group per metric, one bar per series (e.g. baselines vs. our tool). */
 export default function MetricBars({ metrics, series }: Props) {
   return (
     <div className="space-y-4">

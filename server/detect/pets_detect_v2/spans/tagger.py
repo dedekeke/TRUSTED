@@ -176,7 +176,6 @@ class Tagger:
             j = i
             while j + 1 < len(toks) and labs[j + 1] == labs[i]:
                 j += 1
-            # do not start or end a span on punctuation
             a, b = i, j
             while a <= b and not re.match(r"\w", toks[a][0]):
                 a += 1

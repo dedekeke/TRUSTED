@@ -45,13 +45,13 @@ def test_birth_dates_separated_from_event_times():
     assert tuple(label(df, "c2")[["privacy_role", "subtype"]]) == ("quasi_identifier", "BIRTH_DATE")
     assert label(df, "c3").subtype == "TIMESTAMP"
     finnish = pd.DataFrame({"d": ["25.09.2017", "1.11.2019", "02.01.2020", "14.3.2021"] * 10})
-    assert label(finnish, "d").subtype == "DATE"  # dotted dates are not times
+    assert label(finnish, "d").subtype == "DATE"
 
 
 def test_keys_and_entity_ids():
     df = people()
     assert label(df, "c7").privacy_role == "record_key"
-    assert label(df, "c8").privacy_role == "technical_identifier"  # repeating identifier of an entity
+    assert label(df, "c8").privacy_role == "technical_identifier"
 
 
 def test_role_depends_on_table_context():
@@ -70,7 +70,7 @@ def test_uncertain_columns_go_to_review():
 def test_review_regressions():
     n = 40
     df = pd.DataFrame({
-        "ts": [f"2020-01-0{1 + i % 9}T10:00:00{'+02:00' if i % 3 else 'Z'}" for i in range(n)],  # mixed offsets
+        "ts": [f"2020-01-0{1 + i % 9}T10:00:00{'+02:00' if i % 3 else 'Z'}" for i in range(n)],
         "mac": [f"aa:bb:cc:dd:ee:{i:02x}" for i in range(n)],
         "clock": [f"{i % 24:02d}:{i % 60:02d}:00" for i in range(n)],
         "padded": [f"{i:08d}" for i in range(n)],
@@ -83,7 +83,7 @@ def test_review_regressions():
     assert labels.loc["clock", "subtype"] != "IP_ADDRESS"
     assert labels.loc["padded", "subtype"] != "PHONE"
     assert labels.loc["course_name", "privacy_role"] != "direct_identifier"
-    assert labels.loc["hetu", "confidence"] >= .9  # NULL placeholders don't dilute the match rate
+    assert labels.loc["hetu", "confidence"] >= .9
     assert label(pd.DataFrame({"e": [""] * 10}), "e").confidence < .6
 
 
@@ -96,7 +96,7 @@ def test_repeating_station_id_does_not_make_people():
 def test_weak_but_value_detected_identifier_still_marks_people():
     n = 60
     trips = pd.DataFrame({
-        "user_account": [f"user{i % 20}@mail.example" if i % 3 else f"user{i % 20}" for i in range(n)],  # ~67% emails
+        "user_account": [f"user{i % 20}@mail.example" if i % 3 else f"user{i % 20}" for i in range(n)],
         "start_ts": [f"2025-05-{1 + i % 28:02d} {i % 24:02d}:{i % 60:02d}" for i in range(n)],
         "start_lat": [f"60.{4500 + i:05d}" for i in range(n)],
     })

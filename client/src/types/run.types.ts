@@ -1,6 +1,5 @@
 import type { PrivacyRole, Scenario } from '@/types/pipeline.types'
 
-/** Shapes returned by server/api.py (labels, statuses, counts and digests only; never cell values). */
 export interface RunLabel {
   table: string
   column: string

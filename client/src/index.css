@@ -1,4 +1,3 @@
-/* layer order: Tailwind's reset stays below Ant Design, utilities win over both */
 @layer theme, base, antd, components, utilities;
 @import 'tailwindcss';
 @import './styles/globals.css';

@@ -75,10 +75,10 @@ def test_ui_job_equals_cli_run(pkg, tmp_path, monkeypatch, required):  # noqa: F
     for stage in ("detect", "select", "search", "transform"):
         assert cli["stages"][stage]["exit"] == ui["stages"][stage]["exit"]
         assert cli["stages"][stage].get("status") == ui["stages"][stage].get("status")
-    assert cli["stages"]["detect"]["artifacts"] == ui["stages"]["detect"]["artifacts"]   # same labels/spans bytes
+    assert cli["stages"]["detect"]["artifacts"] == ui["stages"]["detect"]["artifacts"]
     assert cli["params"] == ui["params"]
     assert digests(cli_out / "transform" / "protected") == digests(ui_out / "transform" / "protected")
-    assert digests(cli_out / "transform" / "protected")                                   # something was released
+    assert digests(cli_out / "transform" / "protected")
 
 
 def test_job_status_follows_pipeline_stages(pkg, tmp_path, monkeypatch):  # noqa: F811
@@ -86,7 +86,7 @@ def test_job_status_follows_pipeline_stages(pkg, tmp_path, monkeypatch):  # noqa
     monkeypatch.setenv("PRIVACY_TOOL_HMAC_KEY", "parity-key")
     jobs = Jobs(root, model, tmp_path / "runs", scenarios=[])
     jid = jobs.create(dataset="zz_alpha")["id"]
-    bad = {**SPEC, "targets": {"k": 50}, "required": [{"column": "people.city", "task": "T-CITY"},
+    bad = {**SPEC, "trust_level": "public", "targets": {"k": 50}, "required": [{"column": "people.city", "task": "T-CITY"},
                                                       {"column": "people.postcode", "task": "T-PC"}]}
     jobs.start(jid, {"spec": bad, "budget": 5, "no_scorecard": True}, key_present=True)
     t = time.time()

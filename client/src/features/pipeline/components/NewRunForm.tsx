@@ -37,7 +37,6 @@ function folderName(files: File[]) {
   return rel.includes('/') ? rel.split('/')[0] : ''
 }
 
-/** Choose the data (bundled dataset or browsed CSV files), the sharing scenario and the options, then run. */
 export default function NewRunForm({ onStarted }: { onStarted: (job: Job) => void }) {
   const { data: datasets } = useFetch(backend.datasets)
   const { data: scenarios } = useFetch(api.scenarios)
@@ -48,7 +47,7 @@ export default function NewRunForm({ onStarted }: { onStarted: (job: Job) => voi
   const [scenario, setScenario] = useState<string | null>(null)
   const [spec, setSpec] = useState('')
   const [budget, setBudget] = useState(50)
-  const [llm, setLlm] = useState(false)
+  const [llm, setLlm] = useState(true)
   const [allowUnapproved, setAllowUnapproved] = useState(false)
   const [progress, setProgress] = useState<{ file: string; share: number; done: number } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -224,7 +223,7 @@ export default function NewRunForm({ onStarted }: { onStarted: (job: Job) => voi
             <InputNumber min={1} max={500} value={budget} onChange={(v) => setBudget(v ?? 50)} />
           </div>
           <div className="flex items-center justify-between gap-2">
-            <span>Local LLM tier in Detect (Ollama)</span>
+            <span>Local LLM tier in Detect (JEV)</span>
             <Switch checked={llm} onChange={setLlm} />
           </div>
           <div className="flex items-center justify-between gap-2">

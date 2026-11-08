@@ -13,7 +13,7 @@ PROVENANCE_SCHEMA = "pets.select.provenance/1"
 MANIFEST_SCHEMA = "pets.detect.manifest/1"
 SPANS_SCHEMA = "pets.detect.spans/1"
 LINKAGE_SCHEMA = "pets.detect.linkage/1"
-ID_RX = re.compile(r"[0-9a-f]{16}")  # only ids of this shape are echoed; never free strings from artifacts
+ID_RX = re.compile(r"[0-9a-f]{16}")
 SPAN_KEYS = {"span_id", "table", "column", "row_index", "start", "end", "entity_type", "entity_id", "confidence",
              "needs_review"}
 
@@ -193,7 +193,6 @@ def check_evidence(plan: dict, tables: dict, labels, manifest: dict) -> tuple[li
     if stale:
         errors.append(f"stale_span: {len(stale)} span(s) do not match the current data/offsets "
                       f"(e.g. {', '.join(stale[:3])}); re-run detect")
-    # columns detect scanned (clean ones too); older manifests without the map fall back to columns with spans
     scanned = manifest.get("artifacts", {}).get("spans", {}).get("columns")
     scanned = by_column if scanned is None else scanned
     for r in labels.to_dict("records"):
@@ -224,7 +223,7 @@ def check_evidence(plan: dict, tables: dict, labels, manifest: dict) -> tuple[li
 
     def ref(side):
         x = f"{side.get('table')}.{side.get('column')}" if isinstance(side, dict) else None
-        return x if x in schema else None  # unknown refs are never echoed
+        return x if x in schema else None
 
     def rid(r, i):
         x = r.get("relation_id")
@@ -243,7 +242,6 @@ def check_evidence(plan: dict, tables: dict, labels, manifest: dict) -> tuple[li
             ambiguous.add(rid(r, i))
             warnings.append(f"ambiguous_join: detect relation {rid(r, i)} names a column missing from the input")
             continue
-        # under review, a non-key column linked to several partners, or a link selection's own joins contradict
         if r.get("needs_review") or any(len(partners[x]) > 1 and x not in parents for x in (a, b)) or \
                 ((a in plan_join or b in plan_join) and frozenset((a, b)) not in ours):
             ambiguous.add(rid(r, i))
@@ -254,13 +252,11 @@ def check_evidence(plan: dict, tables: dict, labels, manifest: dict) -> tuple[li
         if r.get("kind") != "subject":
             continue
         x = ref(r.get("left"))
-        if x not in subjects:  # selection keeps its own subject resolution; never adopt the suggestion
+        if x not in subjects:
             ambiguous.add(rid(r, i))
             warnings.append(f"ambiguous_subject: detect relation {rid(r, i)} suggests "
                             f"{x or 'a column missing from the input'} as a subject key; selection resolved "
                             f"{sorted(subjects) or 'none'} and does not adopt it")
-    # an identifier that encodes other attributes (HETU -> birth date, sex; IP -> location) must not be released
-    # in a form that keeps them; HMAC tokens, redaction and DROP hide them. Artifact strings are never echoed.
     decisions = {f"{c['table']}.{c['column']}": c for c in plan["columns"]}
     embedded = 0
     for i, r in enumerate(relations):

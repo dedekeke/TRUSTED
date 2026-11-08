@@ -84,7 +84,7 @@ export const SUBTYPES = [
 export interface PetMeta {
   label: string
   family: string
-  /** labels of the generalisation ladder; empty = no levels */
+
   levels: string[]
   description: string
 }

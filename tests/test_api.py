@@ -74,7 +74,7 @@ def confirm_all(base, run_id, state):
 
 
 def test_full_workflow_statuses_and_no_raw_values(server, root, monkeypatch):
-    refused = server_api.guard(root)  # catalog / truth must never be opened while serving the workflow
+    refused = server_api.guard(root)
     assert call(server, '/api/datasets')[1] == {'datasets': ['demo']}
     assert [s['id'] for s in call(server, '/api/scenarios')[1]['scenarios']] == ['DEMO-S1']
     status, run, *_ = call(server, '/api/runs', {'dataset': 'demo'})

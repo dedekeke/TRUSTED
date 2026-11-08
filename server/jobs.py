@@ -35,15 +35,14 @@ from server import api_views, pipeline
 STEPS = ["input", "detect", "review", "select", "search", "transform", "evaluate"]
 JOB_ID = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-RUN_LOCK = threading.Lock()  # one pipeline at a time: stage CLIs print to the process-wide stdout
+RUN_LOCK = threading.Lock()
 OK = {"success", "warning"}
-# personal-looking patterns removed from logs before they are served (logs are for developers; values never leave)
 SCRUB = [re.compile(p) for p in (
-    r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+",                          # e-mail
-    r"\b\d{6}[-+A-FU-Y]?\d{3}[0-9A-Y]\b",                      # HETU
-    r"\b[A-Z]{2}\d{2}(?: ?[0-9A-Z]{4}){3,7}(?: ?[0-9A-Z]{1,4})?\b",  # IBAN
-    r"(?:\+358|\b0)\s?\d{1,3}[\s-]?\d{3,4}[\s-]?\d{2,4}\b",     # phone
-    r"\b\d{1,3}(?:\.\d{1,3}){3}\b",                            # IPv4
+    r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+",
+    r"\b\d{6}[-+A-FU-Y]?\d{3}[0-9A-Y]\b",
+    r"\b[A-Z]{2}\d{2}(?: ?[0-9A-Z]{4}){3,7}(?: ?[0-9A-Z]{1,4})?\b",
+    r"(?:\+358|\b0)\s?\d{1,3}[\s-]?\d{3,4}[\s-]?\d{2,4}\b",
+    r"\b\d{1,3}(?:\.\d{1,3}){3}\b",
 )]
 
 
@@ -61,6 +60,10 @@ class JobError(Exception):
     def __init__(self, status: int, code: str, message: str):
         super().__init__(message)
         self.status, self.code = status, code
+
+
+class Cancelled(Exception):
+    """Raised in the worker before the next stage once the job was cancelled."""
 
 
 class _StepLog(io.TextIOBase):
@@ -110,8 +113,8 @@ class Jobs:
         self.benchmark = benchmark or {}
         self.scenarios = scenarios or []
         self.threads: dict[str, threading.Thread] = {}
+        self.cancelled: set[str] = set()
 
-    # ---------------------------------------------------------------- files
     def dir(self, job_id: str) -> Path:
         if not JOB_ID.match(job_id or ""):
             raise JobError(400, "bad_job_id", "job id must look like 20261107T130507Z-0123abcd")
@@ -142,7 +145,7 @@ class Jobs:
             s = st["steps"][step]
             if fields.get("status") == "running" and s["status"] != "running":
                 s["started_at"], s["finished_at"], s["duration_s"] = now(), None, None
-            if step == "review":  # a human gate checked while select runs: it has no runtime of its own
+            if step == "review":
                 s["started_at"] = s["finished_at"] = s["duration_s"] = None
             elif fields.get("status") not in (None, "running", "queued") and s.get("started_at") and not s.get("finished_at"):
                 s["finished_at"] = now()
@@ -153,7 +156,6 @@ class Jobs:
         self._write(d, "status.json", st)
         return st
 
-    # ---------------------------------------------------------------- create / upload
     def create(self, dataset: str | None = None, upload: str | None = None) -> dict:
         if bool(dataset) == bool(upload):
             raise JobError(400, "bad_request", "give either dataset (bundled) or upload (new dataset name)")
@@ -191,7 +193,7 @@ class Jobs:
             raise JobError(413, "too_large", f"file must be 1 byte .. {limit // 2 ** 20} MB")
         target = Path(job["data"]) / filename
         h, left = hashlib.sha256(), length
-        with target.open("wb") as fh:  # bytes are stored exactly as sent (provenance hashes the raw bytes)
+        with target.open("wb") as fh:
             while left:
                 chunk = stream.read(min(1 << 20, left))
                 if not chunk:
@@ -204,7 +206,6 @@ class Jobs:
             raise JobError(400, "incomplete_upload", "connection closed before the whole file arrived")
         return {"file": filename, "bytes": length, "sha256": h.hexdigest()}
 
-    # ---------------------------------------------------------------- start / confirm
     def start(self, job_id: str, body: dict, key_present: bool) -> dict:
         d = self.dir(job_id)
         job = self._read(d, "job.json")
@@ -272,7 +273,13 @@ class Jobs:
         self._spawn(job_id, d, "select", attempt, str(path))
         return self.state(job_id)
 
-    # ---------------------------------------------------------------- worker
+    def cancel(self, job_id: str) -> dict:
+        """Stop a running job before its next stage; the stage already running finishes (threads cannot be killed)."""
+        d = self.dir(job_id)
+        if self._status(d)["state"] == "running":
+            self.cancelled.add(job_id)
+        return self.state(job_id)
+
     def _spawn(self, job_id, d, start, attempt, confirm):
         t = threading.Thread(target=self._work, args=(d, start, attempt, confirm), daemon=True, name=f"job-{job_id}")
         self.threads[job_id] = t
@@ -291,17 +298,23 @@ class Jobs:
         log = _StepLog(d / "logs")
         with RUN_LOCK, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log), _package_root(self.root):
             try:
+                if d.name in self.cancelled:
+                    raise Cancelled
                 if start == "detect":
                     self._input(d, log)
                     if self._status(d)["steps"]["input"]["status"] != "success":
                         return
 
                 def on_step(stage, entry):
+                    if entry.get("status") == "running" and d.name in self.cancelled:
+                        raise Cancelled
                     log.step = stage
                     self._on_step(d, stage, entry, attempt)
                 pipeline.run(self._namespace(d, confirm), on_step=on_step, detect_fn=self.detect_fn,
                              start=start, attempt=attempt)
-            except SystemExit as e:  # pipeline refuses (missing key, existing dir)
+            except Cancelled:
+                print("cancelled by the user", file=sys.stderr)
+            except SystemExit as e:
                 print(f"pipeline refused: {e.code}", file=sys.stderr)
                 self._fail_running(d, f"pipeline refused: {e.code}")
             except Exception as e:  # noqa: BLE001 - reported on the job, never swallowed
@@ -347,7 +360,7 @@ class Jobs:
             self._set(d, "detect", status="success" if ok else "failed", error=entry.get("error"),
                       summary=api_views.summary("detect", d, ctx) if ok else "")
         elif stage == "select":
-            sel = ctx["select"] or pipeline.stage_dir(ctx["pipeline"], "select", attempt)  # absent when select wrote nothing
+            sel = ctx["select"] or pipeline.stage_dir(ctx["pipeline"], "select", attempt)
             plan = sel / "decisions.json"
             errors = json.loads(plan.read_text()).get("errors", []) if plan.is_file() else []
             only_review = bool(errors) and all(str(e).startswith("review_required") for e in errors)
@@ -370,9 +383,10 @@ class Jobs:
                     self._set(d, "review", status="success", summary="not a review issue")
         elif stage == "search":
             ok = bool(entry.get("approved"))
-            self._set(d, "search", status="success" if ok else "failed",
-                      summary=api_views.summary("search", d, ctx),
-                      error=None if ok else f"search: {entry.get('status')} (targets not met, not approved)")
+            status = "success" if ok else "warning" if entry.get("warning") else "failed"
+            self._set(d, "search", status=status, summary=api_views.summary("search", d, ctx),
+                      error=None if ok else f"search: {entry.get('status')} (targets not met, not approved)"
+                      + ("; exported marked NOT_APPROVED, rows below k listed in evaluation/" if status == "warning" else ""))
         elif stage == "transform":
             s = entry.get("status")
             if s == "not_run":
@@ -399,11 +413,14 @@ class Jobs:
         elif steps["transform"]["status"] in OK and no_scorecard:
             self._set(d, "evaluate", status="skipped", summary="scorecard disabled (no_scorecard)")
         steps = self._status(d)["steps"]
-        for s in STEPS:  # whatever never ran after a stop is skipped
+        for s in STEPS:
             if steps[s]["status"] in ("queued", "running"):
                 self._set(d, s, status="skipped")
         steps = self._status(d)["steps"]
-        if steps["review"]["status"] == "needs_review":
+        if d.name in self.cancelled:
+            self.cancelled.discard(d.name)
+            state = "cancelled"
+        elif steps["review"]["status"] == "needs_review":
             state = "needs_review"
         elif all(steps[s]["status"] in OK or (s == "evaluate" and no_scorecard and steps[s]["status"] == "skipped")
                  for s in STEPS):
@@ -412,7 +429,6 @@ class Jobs:
             state = "failed"
         self._set(d, state=state, finished_at=now())
 
-    # ---------------------------------------------------------------- read
     def ctx(self, d: Path) -> dict:
         job = self._read(d, "job.json")
         params = self._read(d, "params.json") or {}
@@ -474,7 +490,7 @@ class Jobs:
             raise JobError(409, "no_release", "transform has not produced a release")
         prot = ctx["transform"] / "protected"
         buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:  # protected/ only: never evaluation/ or row maps
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             for f in sorted(prot.iterdir()):
                 if f.is_file() and not f.name.startswith("rowmap_"):
                     z.write(f, f"protected/{f.name}")

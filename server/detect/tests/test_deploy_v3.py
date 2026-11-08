@@ -113,7 +113,6 @@ def test_infer_reads_only_model_and_input_and_matches_in_process(pkg, tmp_path, 
     want = DetectorV3(replace(FINAL, tiers=(1, 2)), root).detect("zz_alpha").astype(str)
     pd.testing.assert_frame_equal(got, want)
 
-    # manifest binds every artifact and input file by sha256
     for t, inp in man["inputs"].items():
         assert inp["sha256"] == hashlib.sha256((data / inp["file"]).read_bytes()).hexdigest()
     for a in man["artifacts"].values():
@@ -124,7 +123,6 @@ def test_infer_reads_only_model_and_input_and_matches_in_process(pkg, tmp_path, 
     assert set(zip(got.privacy_role, got.subtype)) <= {tuple(x) for x in man["label_vocabulary"]}
     assert man["detector"]["model_sha256"] == json.loads((model / "model.json").read_text())["model_sha256"]
 
-    # spans: offsets inside the cell, recomputable ids, no raw text
     notes = pd.read_csv(data / "people.csv", dtype=str, keep_default_na=False).notes
     spans = [json.loads(x) for x in (out / "spans.jsonl").read_text().splitlines()]
     assert spans and all(s["column"] == "notes" for s in spans)
@@ -210,16 +208,16 @@ def test_entities_are_numbered_per_conversation_not_per_cell():
     stats, groups = {}, {}
     spans = list(deploy._spans(tables, labels, None, "f" * 64, 0.6, stats, ps, groups))
     ids = {s["row_index"]: s["entity_id"] for s in spans if s["entity_type"] == "PHONE"}
-    assert ids[0] == ids[1]                      # same number, two turns of conversation c1: one entity
-    assert ids[0] != ids[2]                      # same number in conversation c2: not linkable
-    assert ids[3] != ids[0] and ids[3].split(":")[2] == ids[0].split(":")[2]  # other number, same group
+    assert ids[0] == ids[1]
+    assert ids[0] != ids[2]
+    assert ids[3] != ids[0] and ids[3].split(":")[2] == ids[0].split(":")[2]
     assert groups == {"turns.text": "turns.conversation_id"}
-    assert all("c1" not in s["entity_id"] and "040" not in s["entity_id"] for s in spans)  # opaque ids
+    assert all("c1" not in s["entity_id"] and "040" not in s["entity_id"] for s in spans)
 
 
 def test_no_or_ambiguous_group_key_keeps_one_group_per_cell():
     tables, labels, ps = _conversation_inputs()
-    ps[0]["fk_to"] = ["other.turn_id"]           # two FK columns: customer vs conversation is ambiguous
+    ps[0]["fk_to"] = ["other.turn_id"]
     groups = {}
     spans = list(deploy._spans(tables, labels, None, "f" * 64, 0.6, {}, ps, groups))
     ids = {s["row_index"]: s["entity_id"] for s in spans if s["entity_type"] == "PHONE"}
@@ -260,24 +258,37 @@ def test_pipeline_runs_detect_select_search_transform_end_to_end(pkg, tmp_path, 
     assert record["stages"]["transform"]["status"] == "validated"
     notes = pd.read_csv(out / "transform" / "protected" / "people.csv", dtype=str, keep_default_na=False).notes
     src = pd.read_csv(data / "people.csv", dtype=str, keep_default_na=False)
-    assert notes.str.contains(r"\[PERSON_1\]").mean() > .9          # Detect spans -> numbered pseudonyms
-    assert not any(n in " ".join(notes) for n in src.full_name)       # no source name survives
+    assert notes.str.contains(r"\[PERSON_1\]").mean() > .9
+    assert not any(n in " ".join(notes) for n in src.full_name)
     assert "040 " not in " ".join(notes)
     assert json.loads((out / "transform" / "transform_stats.json").read_text())["redaction"] == \
         {"people.notes": "detect_entity_pseudonyms+rules"}
 
 
-def test_pipeline_stops_at_an_unapproved_search(pkg, tmp_path, monkeypatch):
+def _unmet_run(pkg, tmp_path, monkeypatch, trust):
     from server.pipeline import main as pipeline
     root, model = pkg
     spec = tmp_path / "spec.json"
-    spec.write_text(json.dumps({"dataset": "zz_alpha", "trust_level": "internal", "targets": {"k": 50},
+    spec.write_text(json.dumps({"dataset": "zz_alpha", "trust_level": trust, "targets": {"k": 50},
                                 "required": [{"column": "people.city", "task": "T-CITY"},
                                              {"column": "people.postcode", "task": "T-PC"}]}))
     monkeypatch.setenv("PRIVACY_TOOL_HMAC_KEY", "test-only-key")
     out = tmp_path / "run"
     code = pipeline(["--data", str(root / "data" / "zz_alpha"), "--spec", str(spec), "--model", str(model),
                      "--release-id", "zz/test", "--out", str(out), "--no-scorecard", "--budget", "5"])
-    record = json.loads((out / "pipeline.json").read_text())
+    return code, out, json.loads((out / "pipeline.json").read_text())
+
+
+def test_pipeline_stops_at_an_unapproved_public_search(pkg, tmp_path, monkeypatch):
+    code, out, record = _unmet_run(pkg, tmp_path, monkeypatch, "public")
     assert code != 0 and record["stages"]["transform"]["status"] == "not_run"
     assert not (out / "transform").exists()
+
+
+def test_pipeline_warns_and_exports_unapproved_non_public_search(pkg, tmp_path, monkeypatch):
+    _, out, record = _unmet_run(pkg, tmp_path, monkeypatch, "internal")
+    assert record["stages"]["search"]["warning"] is True
+    assert record["stages"]["transform"]["status"] == "unapproved_export"
+    flags = json.loads((out / "transform" / "evaluation" / "k_flags.json").read_text())
+    assert flags["people"]["below_k"] > 0 and (out / "transform" / "evaluation" / "k_flags_people.csv").is_file()
+    assert not list((out / "transform" / "protected").glob("k_flags*"))

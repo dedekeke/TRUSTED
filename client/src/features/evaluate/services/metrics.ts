@@ -1,7 +1,3 @@
-/**
- * Demonstrate step (in-browser preview). Uses the same privacy and composite formulas as `pets-eval scorecard`,
- * but with proxy measurements that need no ground truth. The official numbers come from pets-eval.
- */
 import type { ColumnDetection, Dataset, ProtectedResult } from '@/types/pipeline.types'
 import { scanText } from '@/utils/patterns'
 import { kAnonymity, mean, median, relError, toNumber, tvd, type KAnonymity } from '@/utils/stats'
@@ -53,7 +49,6 @@ export const privacyScore = (risks: number[]) => {
   return 1 - (0.5 * worst + 0.5 * avg)
 }
 
-/** weighted harmonic mean of privacy (30) and utility (25), as in pets-eval */
 export const compositeScore = (p: number, u: number) => (p <= 0 || u <= 0 ? 0 : 55 / (30 / p + 25 / u))
 
 const DI_TEXT_SUBTYPES = new Set([
@@ -72,7 +67,6 @@ export function evaluate(ds: Dataset, dets: ColumnDetection[], res: ProtectedRes
   const pol = new Map(res.policies.map((p) => [p.column, p]))
   const released = new Set(res.columns)
 
-  // 1. direct identifiers retained verbatim (same row, same column)
   const diCols = dets.filter((d) => d.role === 'direct_identifier').map((d) => d.column)
   let diTotal = 0
   let diKept = 0
@@ -87,7 +81,6 @@ export function evaluate(ds: Dataset, dets: ColumnDetection[], res: ProtectedRes
   const diBefore = diTotal ? 1 : 0
   const diAfter = diTotal ? diKept / diTotal : 0
 
-  // 2. free-text leakage: identifier values of the same row that occur in the original text and survive redaction
   const textCols = dets.filter((d) => d.role === 'free_text').map((d) => d.column)
   const idCols = dets.filter((d) => DI_TEXT_SUBTYPES.has(d.subtype)).map((d) => d.column)
   let occ = 0
@@ -108,7 +101,6 @@ export function evaluate(ds: Dataset, dets: ColumnDetection[], res: ProtectedRes
     })
   }
 
-  // 3. residual identifiers anywhere in the output (regex scan, like pets-eval check)
   const counts: Record<string, number> = {}
   const examples: Record<string, string[]> = {}
   let rowsWithResidual = 0
@@ -128,8 +120,6 @@ export function evaluate(ds: Dataset, dets: ColumnDetection[], res: ProtectedRes
     if (Object.values(countsBefore).reduce((a, x) => a + x, 0) > b) rowsResidualBefore++
   }
 
-  // 4. k-anonymity / uniqueness on the detected quasi-identifiers
-  // measure on the QI set k-anonymity was enforced on (the scenario's), else on every detected QI
   const qisOrig = res.kQis.length ? res.kQis : dets.filter((d) => d.role === 'quasi_identifier').map((d) => d.column)
   const qisProt = qisOrig.filter((c) => released.has(c))
   const kBefore = kAnonymity(ds.rows, qisOrig, k)
@@ -173,7 +163,6 @@ export function evaluate(ds: Dataset, dets: ColumnDetection[], res: ProtectedRes
     },
   ]
 
-  // 5. utility per analytical column
   const columns: ColumnUtility[] = []
   for (const c of ds.columns) {
     const d = det.get(c)!
@@ -220,7 +209,7 @@ export function evaluate(ds: Dataset, dets: ColumnDetection[], res: ProtectedRes
       })
       continue
     }
-    // the same transform applied to the original without suppression: differences = information lost to suppression
+
     const mapped = transformColumn(origVals, { ...p }, { tokens: new Map(), names: null })
     const fidelity = 1 - tvd(mapped, protVals)
     const dBefore = new Set(origVals.filter(Boolean)).size || 1
@@ -244,7 +233,6 @@ export function evaluate(ds: Dataset, dets: ColumnDetection[], res: ProtectedRes
   }
   const utility = columns.length ? columns.reduce((a, b) => a + b.score, 0) / columns.length : 0
 
-  // 6. before/after aggregates the recipient would compute
   const aggregates: AggregateComparison[] = []
   for (const c of res.columns) {
     const d = det.get(c)!

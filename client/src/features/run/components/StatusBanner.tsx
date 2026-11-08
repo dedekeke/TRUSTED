@@ -1,7 +1,6 @@
 import { Alert } from 'antd'
 import type { PlanSummary } from '@/types/run.types'
 
-// Wording follows the select/search status contract: only outcome.approved reads as approved.
 const TEXT = {
   policy_valid: ['info', 'Policy valid — not yet measured', 'Initial plan is within the rule matrix. Not approved.'],
   blocked: ['error', 'Blocked — not approved', 'Named conflicts must be resolved; nothing may be released.'],

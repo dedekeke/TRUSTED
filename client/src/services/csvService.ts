@@ -8,7 +8,6 @@ export interface ParsedCsv {
   truncated: boolean
 }
 
-/** Parse CSV text with every value kept as a string (phone numbers, postcodes and IDs break as numbers). */
 export function parseCsvText(text: string, maxRows = appConfig.maxUploadRows): ParsedCsv {
   const res = Papa.parse<Row>(text, { header: true, skipEmptyLines: true, dynamicTyping: false })
   const columns = (res.meta.fields ?? []).filter(Boolean)

@@ -69,7 +69,7 @@ def cmd_select(a) -> int:
     rel = relations.discover(tables, labels, {"joins": [list(p) for j in req.get("joins") or []
                                                         for p in combinations(j["columns"], 2)]}
                              if a.declare_joins else None)
-    if manifest is not None:  # S3: Detect's confident subject suggestion for a table selection left without one
+    if manifest is not None:
         rel = relations.adopt_detect_subjects(rel, artifacts.subject_suggestions(manifest, tables))
     plan = select.select(tables, labels, rel, req, a.release_id)
     plan["provenance"] = artifacts.provenance(a.data, manifest, confirm_sha, select.DETECTOR_VERSION)
@@ -116,7 +116,7 @@ def cmd_search(a) -> int:
         orig = load_tables(a.data)
     tables = read_tables(a.data)
     spans = None
-    if a.detect:  # measure free text exactly as the export will redact it (same loader and checks as transform)
+    if a.detect:
         from server.transform import spans as span_io
         try:
             detect, by_ref = span_io.load(a.detect, a.data, plan)

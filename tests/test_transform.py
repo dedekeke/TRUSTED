@@ -58,25 +58,25 @@ def plan():
 def test_join_tokens_match_and_blanks_stay_blank():
     out, _ = apply(tables(), plan(), KEY)
     v, l = out["visits"], out["labs"]
-    assert set(l.vid[:2]) <= set(v.vid) and l.vid[2] not in set(v.vid)  # join kept, orphan stays orphan
+    assert set(l.vid[:2]) <= set(v.vid) and l.vid[2] not in set(v.vid)
     assert v.pid[0] == v.pid[1] and v.pid[2] == "" and v.pid[0] != v.pid[3]
     assert "V1" not in set(v.vid) and len(v.vid[0]) == 32
     other = apply(tables(), {**plan(), "release_id": "OTHER/recipient"}, KEY)[0]
-    assert other["visits"].vid[0] != v.vid[0]  # tokens are scoped to the release
+    assert other["visits"].vid[0] != v.vid[0]
 
 
 def test_floor_hour_keeps_date_week_and_hhmm_text():
     out, stats = apply(tables(), plan(), KEY)
     a = out["visits"].arrival
     assert a[0] == "2025-12-28 23:00" and a[3] == "2025-06-30 00:00"
-    assert a[2] == "" and stats["blanked"]["visits.arrival"] == 1  # unparseable -> blank, counted
+    assert a[2] == "" and stats["blanked"]["visits.arrival"] == 1
 
 
 def test_age_derived_from_original_dates_before_dropping():
     out, _ = apply(tables(), plan(), KEY)
     v = out["visits"]
     assert "dob" not in v and "name" not in v
-    assert v.age[0] == "40-49" and v.age[3] == "30-39" and v.age[2] == ""  # unparseable event date -> blank
+    assert v.age[0] == "40-49" and v.age[3] == "30-39" and v.age[2] == ""
     assert list(v.columns)[-1] == "age"
 
 
@@ -138,7 +138,7 @@ def test_generalisers_never_pass_raw_values_through():
     assert run(["J18.9", "Mikko Laine", ""], "icd_3char") == ["J18", "", ""]
     assert run(["J18.9", "x1"], "icd_chapter") == ["J", ""]
     assert run(["10.1.2.3", "host.0", "12345.0"], "ipv4_prefix") == ["10.1.2.0", "", ""]
-    assert run(["1234567.85", "2.5"], "round_decimals", digits=1) == ["1234567.8", "2.5"]  # no exponent notation
+    assert run(["1234567.85", "2.5"], "round_decimals", digits=1) == ["1234567.8", "2.5"]
     assert run(["34", "-3", "30-39", "80+"], "age_band", width=10, top=80) == ["30-39", "", "30-39", "80+"]
     assert run(["2025-12-29 08:00", "x"], "iso_week") == ["2026-W01", ""]
     assert run(["2025-12-29 08:00"], "month") == ["2025-12"] and run(["2025-12-29"], "year") == ["2025"]
@@ -227,3 +227,10 @@ def test_transform_cli_checks_input_binding(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv('PRIVACY_TOOL_HMAC_KEY', 'test-key')
     assert main(['transform', '--data', str(data), '--plan', str(tmp_path / 'plan.json'), '--out', str(tmp_path / 'o')]) == 2
     assert '[input_mismatch]' in capsys.readouterr().err and not (tmp_path / 'o').exists()
+
+
+def test_should_derive_age_at_ref_date_instead_of_row_event():
+    from server.actions import derive_age_band
+    df = pd.DataFrame({"dob": ["1990-06-01"], "opened": ["2000-01-01"]})
+    assert derive_age_band(df, "dob", "opened", width=10)[0] == "0-9"
+    assert derive_age_band(df, "dob", "opened", width=10, ref_date="2025-12-31")[0] == "30-39"

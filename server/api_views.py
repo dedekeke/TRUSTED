@@ -16,7 +16,6 @@ from pathlib import Path
 import pandas as pd
 
 LABEL_FIELDS = ["table", "column", "privacy_role", "subtype", "confidence", "needs_review", "art9", "data_kind"]
-# Detect v3 quality from its leave-one-dataset-out evaluation (server/detect README; offline, not this run)
 DETECT_V3_EVAL = {"macro_f1_names": 0.854, "macro_f1_blind": 0.774, "span_f2": 0.998}
 ISSUE_CODE = re.compile(r"^([a-z_]+):\s")
 REVIEW_RX = re.compile(r"review_required: (\S+) is required by (.+?) but its label (\S+) is uncertain "
@@ -50,8 +49,6 @@ def issues_from(messages: list, level: str) -> list[dict]:
         out.append({"level": level, "code": code.group(1) if code else level, "message": m})
     return out
 
-
-# ---------------------------------------------------------------- per-step views
 
 def view_input(job: Path, ctx: dict) -> dict:
     info = _json(job / "input.json") or {"tables": []}
@@ -110,7 +107,7 @@ def view_detect(job: Path, ctx: dict) -> dict:
             table("quality", "Detector quality vs baseline", [
                 ("detector", "Detector"), ("macro_f1_names", "Macro-F1 (with names)"),
                 ("macro_f1_blind", "Macro-F1 (names hidden)"), ("sensitive_recall", "Sensitive recall")], quality,
-                note="Offline leave-one-dataset-out evaluation on the 9 labelled datasets (server/detect README); "
+                note="Offline leave-one-dataset-out evaluation on the 9 labelled datasets (README, Detect results); "
                      "not measured on this run."),
         ],
         "issues": []}
@@ -265,6 +262,10 @@ def view_transform(job: Path, ctx: dict) -> dict:
               "residual": un.get(k, 0), "reason": (fp.get(k) or {}).get("reason", "")}
              for k in sorted(set(raw) | set(un))]
     red = [{"column": c, "method": m} for c, m in (stats.get("redaction") or {}).items()]
+    flags = [{"table": t, "rows": f.get("rows"), "below_k": f.get("below_k"), "k": f.get("k"),
+              "share": _r(f["below_k"] / f["rows"]) if f.get("rows") else None, "qis": ", ".join(f.get("qis") or []),
+              "file": f"evaluation/k_flags_{t}.csv" if f.get("below_k") else ""}
+             for t, f in (_json(tra / "evaluation" / "k_flags.json") or {}).items()]
     return {"stats": [{"label": "Validation", "value": man.get("validation_status")},
                       {"label": "Approved release", "value": man.get("approved_release")},
                       {"label": "Tables exported", "value": len(man.get("tables") or {})},
@@ -275,6 +276,10 @@ def view_transform(job: Path, ctx: dict) -> dict:
                        table("exported", "Exported tables (protected/)", [
                            ("table", "Table"), ("rows", "Rows"), ("columns", "Columns"),
                            ("suppressed_rows", "Rows suppressed"), ("suppressed_cells", "Cells suppressed")], exported),
+                       table("k_flags", "Rows below the k target (not approved export)", [
+                           ("table", "Table"), ("rows", "Rows"), ("below_k", "Rows below k"), ("share", "Share"),
+                           ("k", "Target k"), ("qis", "Quasi-identifiers"), ("file", "Row list (private)")], flags,
+                           note="Row numbers are only in the private evaluation/ folder, never in protected/."),
                        table("redaction", "Free-text redaction", [("column", "Column"), ("method", "Method")], red),
                        table("identifiers", "Residual identifier scan (pets-eval check)", [
                            ("label", "Type"), ("raw_hits", "Pattern hits"), ("false_positives", "False positives"),
@@ -303,8 +308,6 @@ def view_evaluate(job: Path, ctx: dict) -> dict:
     ours = summarise_scorecard(rep)
     ds, sc = ctx.get("dataset"), ctx.get("scenario")
     bench = ctx.get("benchmark", {})
-    # our scorecard runs with the scenario, so its utility covers the scenario's tasks only: it is compared in the
-    # scenario column, never against the baselines' all-task utility
     rows = [{"method": "Ours (this pipeline)", **{k: _r(ours[k]) for k in ("privacy", "composite",
                                                                           "worst_reid", "residual_identifiers")},
              "utility": None, "scenario_utility": _r(ours["utility"])}]

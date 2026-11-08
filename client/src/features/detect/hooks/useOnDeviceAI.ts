@@ -3,7 +3,6 @@ import { nanoClassify, nanoStatus, type NanoStatus } from '@/services/onDeviceAI
 import { usePipeline } from '@/hooks/usePipeline'
 import type { ColumnDetection } from '@/types/pipeline.types'
 
-/** Google Web AI (Gemini Nano in Chrome) to second-guess uncertain columns, entirely on-device. */
 export function useOnDeviceAI() {
   const { updateDetection } = usePipeline()
   const [status, setStatus] = useState<NanoStatus>('unsupported')

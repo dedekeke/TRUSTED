@@ -3,4 +3,5 @@ numpy
 scipy
 scikit-learn
 # scoring only: pip install -e ../../../toolkit   (the organisers' pets-eval)
-# optional LLM tier: Ollama on localhost with `ollama pull qwen2.5:7b`
+# optional LLM tier (v3): AutoTrust-JEV-27B 4-bit MLX served on localhost by jev27b_mlx (Apple Silicon), see README
+# (DETECT_LLM_BACKEND=ollama: Ollama on localhost with `ollama pull qwen2.5:7b`)

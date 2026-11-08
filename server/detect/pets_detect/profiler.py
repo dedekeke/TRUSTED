@@ -14,8 +14,8 @@ import pandas as pd
 
 from . import patterns as P
 
-SAMPLE_ROWS = 20000      # rows read per table (enough for statistics, fast on 50 MB files)
-VALUE_SAMPLE = 600       # values used for pattern tests
+SAMPLE_ROWS = 20000
+VALUE_SAMPLE = 600
 
 
 def load_dataset(folder: Path, nrows: int = SAMPLE_ROWS) -> dict[str, pd.DataFrame]:
@@ -119,7 +119,6 @@ def profile_column(dataset: str, table: str, col: str, s: pd.Series, col_index: 
         "num_decimals": float(np.mean([len(v.split(".")[-1]) if "." in v else 0 for v in vals])) if nums else 0.0,
         "year_median": float(np.median(years)) if years else None,
         "year_span": (max(years) - min(years)) if years else None,
-        # identifier patterns
         "m_hetu": _frac(vals, P.hetu_shape),
         "m_hetu_valid": _frac(vals, P.hetu_valid),
         "m_email": _frac(vals, _rx("EMAIL")),
@@ -140,7 +139,6 @@ def profile_column(dataset: str, table: str, col: str, s: pd.Series, col_index: 
         "m_uuid": _frac(vals, _rx("UUID")),
         "m_hostname": _frac(vals, _rx("HOSTNAME")),
         "m_prefixed_id": _frac(vals, _rx("PREFIXED_ID")),
-        # quasi-identifier patterns
         "m_date": _frac(vals, _any_rx(P.DATE_RXS)),
         "m_month": _frac(vals, _any_rx(P.MONTH_RXS)),
         "m_timestamp": _frac(vals, _any_rx(P.TS_RXS)),
@@ -153,7 +151,6 @@ def profile_column(dataset: str, table: str, col: str, s: pd.Series, col_index: 
         "m_country": _frac(low, lambda v: v in P.COUNTRIES),
         "m_icd10": _frac(vals, _rx("ICD10")),
         "m_bool": _frac(vals, _rx("BOOL")),
-        # name patterns
         "m_name_shape": _frac(vals, _rx("PERSON_NAME_SHAPE")),
         "m_single_cap": _frac(vals, _rx("SINGLE_CAP_WORD")),
         "m_first_name": _frac(vals, tokens_first_name),
@@ -162,7 +159,7 @@ def profile_column(dataset: str, table: str, col: str, s: pd.Series, col_index: 
         "shapes": [s for s, _ in Counter(mask_shape(v) for v in vals).most_common(5)],
         "top_values": [(v, c) for v, c in Counter(vals_all).most_common(8)],
         "samples": vals[:6],
-        "fk_to": [],          # filled by link_columns()
+        "fk_to": [],
         "is_key_target": False,
     }
     return prof

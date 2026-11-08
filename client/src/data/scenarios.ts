@@ -1,4 +1,3 @@
-// Hardcoded demo data (synthetic, from the TrustED PETs Proving Ground 2026 package, CC BY 4.0 © Since AI ry).
 import type { Scenario } from '@/types/pipeline.types'
 
 export const SCENARIOS: Scenario[] = [

@@ -163,7 +163,7 @@ def role_bars(sc_blind: dict, sc_names: dict) -> str:
 
 
 def confusion(sc: dict) -> str:
-    cm = sc["confusion"]  # {pred: {gold: n}}
+    cm = sc["confusion"]
     golds = [r for r in ROLES if any(r in cm.get(p, {}) for p in cm)]
     preds = [r for r in ROLES + ["missing"] if r in cm]
     mx = max([v for p in cm.values() for v in p.values()] or [1])
@@ -224,7 +224,6 @@ def dataset_page(ds: str, version: str, preds: dict[str, pd.DataFrame], summary:
     else:
         body += ('<div class="note">No public ground truth for this dataset: the organisers keep the labels. '
                  'Only the predictions and their reasons are shown.</div>')
-    # per-column table
     body += "<h2>Every column</h2>"
     body += ('<p class="sub">Main prediction = names hidden. Red rows are wrong against the catalog. '
              'Reasons are shown with values masked (e.g. <span class="mono">9x6-9x4</span>).</p>')
@@ -402,7 +401,6 @@ def linkage_html(res: dict) -> str:
     return out
 
 
-# ------------------------------------------------------------------------------------------------- spans
 def span_summary_html(spans: dict) -> str:
     rows = ""
     for key, s in spans["files"].items():

@@ -2,13 +2,12 @@ import { riskColor, scoreColor } from '@/utils/format'
 
 interface Props {
   value: number | null | undefined
-  /** risk = lower is better */
+
   kind?: 'score' | 'risk'
   label?: string
   width?: string
 }
 
-/** Thin horizontal bar with the numeric value; colour encodes good / warning / bad. */
 export default function ScoreBar({ value, kind = 'score', label, width = 'w-full' }: Props) {
   const v = value == null || Number.isNaN(value) ? null : Math.max(0, Math.min(1, value))
   const color = v == null ? '#bfbfbf' : kind === 'risk' ? riskColor(v) : scoreColor(v)

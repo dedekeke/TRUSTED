@@ -5,13 +5,10 @@ import { formatDuration, STATUS_META, STEP_TITLES } from '../stepMeta'
 import StatusIcon from './StatusIcon'
 import StepPanel from './StepPanel'
 
-/** A step opens by itself when it fails, waits for a review, or is the finished evaluation. */
 const openByDefault = (s: JobStep) =>
   s.status === 'failed' || s.status === 'needs_review' || (s.name === 'evaluate' && s.status === 'success')
 
-/** GitHub-Actions-like list of steps: green = passed, red = failed; expand a step to see its tables. */
 export default function RunTimeline({ job, onJob }: { job: Job; onJob: (j: Job) => void }) {
-  // the user's open/close choice, kept until that step's status (or the attempt) changes
   const [choice, setChoice] = useState<Record<string, boolean>>({})
   const stateKey = (s: JobStep) => `${job.attempt}:${s.name}:${s.status}`
   const open = job.steps.filter((s) => choice[stateKey(s)] ?? openByDefault(s)).map((s) => s.name)

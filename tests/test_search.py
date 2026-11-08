@@ -66,7 +66,7 @@ def test_search_coarsens_until_target_and_keeps_required_analyses():
     assert risk["share_below_k"] <= 0.02 or out["status"] == "target_unmet"
     assert out["measured"]["risk"]["visits"]["share_below_k"] < out["search_trace"][0]["risk_k"]
     cols = {c["column"]: c for c in out["columns"]}
-    assert cols["arrival"]["method"] in ("floor_hour", "week_hour", "month_hour", "year_hour")  # hour kept
+    assert cols["arrival"]["method"] in ("floor_hour", "week_hour", "month_hour", "year_hour")
     assert all(s >= 0.8 * out["measured"]["baseline_utility"][t] for t, s in out["measured"]["utility"].items())
 
 
@@ -210,7 +210,6 @@ def test_finest_degradation_does_not_lower_utility_baseline():
     tables, labels, rel, req = inputs(40)
     def score(orig, prot):
         return {'score': .5 if '00' in str(prot['visits']['arrival'].iloc[0]) else 1.}
-    # Explicitly distinguish original precision from every floor-hour candidate.
     tables['visits']['arrival'] = tables['visits']['arrival'].str.replace(':00', ':37')
     out = search(tables, select(tables, labels, rel, req), KEY,
                  [SimpleNamespace(id='HOUR', fn=score), big_city_task()])
@@ -370,7 +369,7 @@ def test_configured_t_is_measured_for_every_candidate():
 def test_conflicts_name_subjects_and_sensitive_targets():
     tables, labels, rel, req = inputs(40)
     tables['visits']['score'] = 'same'
-    tables['visits'].loc[:3, 'pid'] = ''        # 4 of 40 rows (10%) without a subject: above the 5% allowance
+    tables['visits'].loc[:3, 'pid'] = ''
     labels.loc[labels.column == 'score', ['privacy_role', 'subtype']] = ['sensitive_attribute', 'HEALTH_DATA']
     req.update(source='spec', targets={'k': 5, 'l': 2}, required={'visits.score': ['SCORE']})
     out = search(tables, select(tables, labels, rel, req), KEY)
@@ -407,7 +406,7 @@ def test_search_cli_writes_decisions_and_diagnostics_without_export(tmp_path, mo
     from server.select import transform
     tables, labels, rel, req = inputs(40)
     req['source'] = 'spec'
-    tables['visits'].loc[:3, 'pid'] = ''        # 10% without a subject: above the allowance, so it is reported
+    tables['visits'].loc[:3, 'pid'] = ''
     plan = select(tables, labels, rel, req)
     data = tmp_path / 'data'
     data.mkdir()
@@ -441,7 +440,6 @@ def test_greedy_skips_sensitive_steps_unless_t_is_a_target(t, tried):
     out = search(tables, select(tables, labels, rel, req), KEY)
     greedy = [e['changed_column'] for e in out['search_trace'] if e['phase'] == 'greedy']
     assert greedy and ('visits.score' in greedy) is tried
-    # the budget goes to quasi-identifier rungs: every allowed city rung is reached in combination
     if not tried:
         assert max(e['levels']['visits.city'] for e in out['search_trace'] if e['phase'] == 'greedy') == 3
 
@@ -451,14 +449,13 @@ def test_few_unresolved_subjects_are_allowed_and_never_raise_k():
     count as one person, so they can only lower k, never raise it."""
     from server.select.search import _Evaluator, _unknown_breach
     tables, labels, rel, req = inputs(40)
-    tables['visits'].loc[0, 'pid'] = ''         # 1 of 40 rows (2.5%)
+    tables['visits'].loc[0, 'pid'] = ''
     req['source'] = 'spec'
     plan = select(tables, labels, rel, req)
     assert plan['targets']['max_unknown_subjects'] == 0.05
     ev = _Evaluator(tables, plan, KEY, None, tables)
     r = ev.risk(tables)['visits']
     assert r['unknown_subject_rows'] == 1 and not _unknown_breach(r, plan['targets'])
-    # the same rows with every subject unknown: one stand-in person per class, so k cannot exceed 1
     ev.subjects['visits'] = ev.subjects['visits'].map(lambda v: None)
     assert ev.risk(tables)['visits']['k_anonymity']['min_k'] == 1
 
@@ -470,7 +467,7 @@ def test_small_classes_count_unresolved_rows_as_one_person():
     known = pd.Series(['p1', 'p2', 'p3', 'p4'])
     unknown = pd.Series([None, None, None, None])
     mixed = pd.Series(['p1', 'p2', None, None])
-    assert not small_classes(df, ['qi'], known, 4).any()      # 4 people
-    assert small_classes(df, ['qi'], unknown, 2).all()        # 4 unknown rows = 1 person < 2
-    assert small_classes(df, ['qi'], mixed, 4).all()          # 2 people + 1 stand-in = 3 < 4
+    assert not small_classes(df, ['qi'], known, 4).any()
+    assert small_classes(df, ['qi'], unknown, 2).all()
+    assert small_classes(df, ['qi'], mixed, 4).all()
     assert not small_classes(df, ['qi'], mixed, 3).any()

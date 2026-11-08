@@ -1,8 +1,3 @@
-/**
- * Google Web AI: Chrome's built-in Prompt API (Gemini Nano). Runs entirely on the device, so column samples
- * never leave the browser. Availability depends on Chrome version and hardware; everything here degrades to
- * "unsupported" and the rule-based detector keeps working.
- */
 import { ROLES, SUBTYPES } from '@/utils/constants'
 import type { ColumnStats, PrivacyRole } from '@/types/pipeline.types'
 

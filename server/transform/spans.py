@@ -87,6 +87,6 @@ def align(manifest: dict, by_ref: dict, tables: dict[str, pd.DataFrame], refs: s
         t, c = ref.split(".", 1)
         rows = by_ref.get(ref)
         if rows is None:
-            continue  # not scanned by Detect: the caller decides (fallback or block)
+            continue
         out[ref] = [rows.get(i, []) for i in range(len(tables[t][c]))]
     return out

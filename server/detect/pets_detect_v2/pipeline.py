@@ -32,12 +32,12 @@ OUT_COLS = ["dataset", "table", "column", "privacy_role", "subtype", "confidence
 @dataclass
 class Config:
     tiers: tuple = (1, 2, 3)
-    model: str = "logreg"          # logreg | gbm | knn (v1 retrieval, for the ablation)
-    rule_accept: float = 0.85      # tier-1 decisions at or above this confidence are final
-    llm_below: float = 0.65        # columns below this confidence go to the table-level LLM
-    recall_margin: float = 0.10    # prefer a sensitive role when within this margin of non_sensitive
-    review_below: float = 0.60     # needs_review flag for the Select step / UI
-    llm_min_prob: float = 0.15     # the LLM may only move a column to a role the classifier finds plausible
+    model: str = "logreg"
+    rule_accept: float = 0.85
+    llm_below: float = 0.65
+    recall_margin: float = 0.10
+    review_below: float = 0.60
+    llm_min_prob: float = 0.15
     blind_names: bool = False
     llm_model: str | None = None
     context: str = ""
@@ -47,8 +47,6 @@ class Config:
 PATTERN_SUBTYPES = {"IBAN": "m_iban", "LICENSE_PLATE": "m_plate", "EMAIL": "m_email", "PHONE": "m_phone",
                     "NATIONAL_ID": "m_hetu", "IP_ADDRESS": "m_ipv4", "MAC_ADDRESS": "m_mac", "PAYMENT_CARD": "m_pan",
                     "GPS_COORDINATE": "m_coord"}
-# share of values that must match; coordinates are often stored with 3 decimals, so only some reach the 4-decimal
-# pattern (signin_logs.geo_lon: 28%), while 2-decimal money amounts never do (0%)
 PATTERN_MIN_SHARE = {"GPS_COORDINATE": .2}
 
 
@@ -79,7 +77,7 @@ class DetectorV2:
         for ds in self.labelled:
             ps = load_profiles(ds, self.data_dir)
             kb += [self._view(p) for p in ps]
-        self.train = catalog_labels(kb, self.catalog)          # [(profile view, role, subtype)]
+        self.train = catalog_labels(kb, self.catalog)
         self.train_t1 = [tier1(p) for p, _, _ in self.train]
         self._models: dict[str, object] = {}
         self.llm = TableLLM(cfg.llm_model) if 3 in cfg.tiers else None
@@ -87,11 +85,10 @@ class DetectorV2:
         if cfg.model == "knn" and 2 in cfg.tiers:
             self.kb = KnowledgeBase([p for p, _, _ in self.train], self.catalog, "tfidf",
                                     use_names=not cfg.blind_names)
-        # subtype -> data_kind / art9 priors from the catalog (used for the Select fields only, never scored)
         self.kind_of = self.catalog.groupby("subtype").data_kind.agg(lambda s: s.value_counts().index[0]).to_dict()
         a9 = self.catalog.assign(a=self.catalog.art9_special_category.eq("True"))
         self.art9_of = a9.groupby(["privacy_role", "subtype"]).a.mean().to_dict()
-        self.pairs = set(zip(self.catalog.privacy_role, self.catalog.subtype))  # valid (role, subtype) pairings
+        self.pairs = set(zip(self.catalog.privacy_role, self.catalog.subtype))
         self.timings: dict[str, float] = {}
 
     def _view(self, p: dict) -> dict:
@@ -107,10 +104,9 @@ class DetectorV2:
             self._models[dataset] = m
         return self._models[dataset]
 
-    # ---- tier 2 -------------------------------------------------------------------------------------------
     def _tier2(self, dataset: str, qs: list[dict], t1s: list[Decision]):
         cfg = self.cfg
-        if self.kb is not None:  # v1 retrieval, for the ablation
+        if self.kb is not None:
             out = []
             for q in qs:
                 probs, best = self.kb.vote(self.kb.retrieve(q, cfg.k, dataset))
@@ -120,7 +116,6 @@ class DetectorV2:
         probs = m.predict_proba(qs, t1s)
         return probs, m
 
-    # ---- main ---------------------------------------------------------------------------------------------
     def detect(self, dataset: str) -> pd.DataFrame:
         t0 = time.time()
         cfg = self.cfg
@@ -161,7 +156,6 @@ class DetectorV2:
                     finals[i].reason = (f"statistical model: {recs[i]['p_top3']}" +
                                         (f"; rules weakly suggested {t1.privacy_role}" if t1.confidence > .4 else "")
                                         + why_bias)
-            # subtypes for columns whose role changed away from the rules
             need = [i for i, f in enumerate(finals) if f.subtype == ""]
             if need:
                 if isinstance(helper, ColumnClassifier):
@@ -173,7 +167,6 @@ class DetectorV2:
                     finals[i].subtype = s
             finals = [context_adjust(q, f) if f.source != "rules" else f for q, f in zip(qs, finals)]
 
-        # ---- tier 3: table-level LLM ----
         domains: dict[str, str] = {}
         if self.llm is not None:
             by_table = defaultdict(list)
@@ -200,8 +193,6 @@ class DetectorV2:
                     if bad:
                         cur.reason += f"; LLM suggested {role} but rejected ({bad})"
                         continue
-                    # small models pick subtypes loosely: keep the LLM subtype only when it is a known pairing for
-                    # the role and the values match its pattern; otherwise ask the subtype model
                     sub = a["subtype"]
                     sub_ok = (role, sub) in self.pairs and guardrail(qs[i], role, sub) is None
                     if role == cur.privacy_role:
@@ -209,8 +200,6 @@ class DetectorV2:
                         finals[i] = Decision(role, st, (cur.confidence + lconf) / 2 + .1,
                                              f"LLM agrees: {reason}", cur.source + "+llm")
                     elif probs_all[i] is not None and probs_all[i].get(role, 0) < cfg.llm_min_prob:
-                        # LLM as a tie-breaker, not a free guess: when names are hidden a 7B model tends to call
-                        # anything opaque a technical identifier
                         cur.reason += (f"; LLM suggested {role} but the statistical model gives it only "
                                        f"{probs_all[i].get(role, 0):.2f}, kept {cur.privacy_role}")
                     elif lconf >= .5:

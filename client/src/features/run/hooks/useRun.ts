@@ -21,7 +21,6 @@ function remember(id: string) {
   }
 }
 
-/** The current backend run, carried in ?run=<id> (and remembered for the session across sidebar navigation). */
 export function useRun() {
   const [params, setParams] = useSearchParams()
   const runId = params.get('run') ?? remembered()
@@ -51,7 +50,7 @@ export function useRun() {
       if (params.get('run') !== r.id) setParams({ run: r.id })
     } catch (e) {
       setError(e instanceof ApiError ? e : new ApiError('network', String(e)))
-      // the failure is recorded on the run; refresh so its errors list shows it
+
       if (runId) backend.run(runId).then(setRun, () => undefined)
     } finally {
       setBusy(null)

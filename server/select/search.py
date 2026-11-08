@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 from pets_eval import privacy
 
+from server.actions import age_years
+
 from . import preview as T
 from .policy import NUMERIC
 
@@ -31,7 +33,7 @@ def _subject_col(plan, table):
 class _Evaluator:
     def __init__(self, tables, plan, key, tasks, orig, spans=None):
         self.tables, self.plan, self.key, self.tasks, self.orig = tables, plan, key, tasks or [], orig
-        self.spans = spans or {}  # validated Detect spans per free-text column: previews redact as the export will
+        self.spans = spans or {}
         self.cache = {}
         self.metric_cache = {}
         self.subjects = {}
@@ -51,7 +53,7 @@ class _Evaluator:
                 if cache_key not in self.cache:
                     rung = c['rungs'][level] if level is not None else c
                     if 'sources' in c:
-                        value = T.derive_age_band(self.tables[table], *c['sources'], **rung['params'])
+                        value = T.derive_age_band(self.tables[table], *c['sources'], **rung['params'], ref_date=c.get('ref_date'))
                     else:
                         value = T.apply_column(self.tables[table][c['column']], {**c, **rung}, self.key,
                                                self.plan['release_id'], self.tables[table], self.plan['columns'],
@@ -81,8 +83,6 @@ class _Evaluator:
             qis = self.qis(table, df)
             subjects = self.subjects[table]
             unknown = int(subjects.isna().sum())
-            # One contribution per subject/class; repeated visits never inflate k. Unresolved rows of a class
-            # together count as one person (T.with_unknown), the most conservative reading.
             known = df.copy()
             marker = object()
             known[marker] = T.with_unknown(subjects).values
@@ -99,7 +99,6 @@ class _Evaluator:
                 s = c['column']
                 if c['table'] != table or c['privacy_role'] != 'sensitive_attribute' or s not in df:
                     continue
-                # Multi-valued subjects contribute once per distinct class/value, never once per visit.
                 values = known.drop_duplicates(list(dict.fromkeys([marker] + qis + [s])))
                 fingerprint = sha256(pd.util.hash_pandas_object(values[qis + [s]].astype(str), index=False).values.tobytes()).digest()
                 metric_key = (table, tuple(qis), s, fingerprint, measure_t)
@@ -197,7 +196,6 @@ def _outcome(plan, current, failed, tau, base, budget, used, unexplored):
     for task in failed:
         violations.append({'metric': 'utility', 'table': None, 'target': None if base.get(task) is None else tau * base[task],
                            'achieved': current['utility'].get(task), 'requirements': [task]})
-    # approval also needs inputs bound to a detect manifest; the built-in detector is never approval evidence
     bound = (plan.get('provenance') or {}).get('bound') is True
     issues = [] if bound else ['provenance_unbound']
     return {'policy_valid': True, 'targets_met': not violations, 'approved': plan['status'] == 'measured_ok' and bound,
@@ -232,7 +230,7 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8, spans=N
     levels = {_ref(c): 0 for c in items}
     floors = {_ref(c): 0 for c in items}
     trace, cache, limits = [], {}, {}
-    unexplored = 0  # candidates the search would still try; > 0 at a budget stop means budget_exhausted
+    unexplored = 0
 
     def evaluate(lv, phase, suppression=None, changed_column=None):
         cache_key = (tuple(sorted(lv.items())), tuple(sorted((suppression or {}).keys())))
@@ -260,16 +258,12 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8, spans=N
 
     baseline = evaluate(levels, 'baseline')
     baseline['accepted'] = True
-    # Keep required schema/derived fields and shared pseudonyms, but restore source precision.
     minimized = ev.build(levels)
     for c in plan['columns']:
         if c['action'] != 'DROP' and c['privacy_role'] not in ('direct_identifier', 'technical_identifier', 'record_key', 'free_text'):
             minimized[c['table']][c['column']] = tables[c['table']][c['column']]
     for d in plan.get('derived', []):
-        birth, event = d['sources']
-        src = tables[d['table']]
-        age = (T.safe_datetime(src[event]) - T.safe_datetime(src[birth])).dt.days / 365.25
-        minimized[d['table']][d['column']] = age.where(age >= 0)
+        minimized[d['table']][d['column']] = age_years(tables[d['table']], *d['sources'], d.get('ref_date'))
     base = {task.id: None for task in ev.tasks}
     if ev.tasks and len(trace) >= budget:
         unexplored += 1
@@ -299,7 +293,6 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8, spans=N
                     score += max(0., metrics['t_closeness'].get('max_t', 1.) - targets['t'])
         return score
 
-    # Probe independently, one rung at a time against the finest allowed plan.
     for c in items:
         ref = _ref(c)
         for level in range(1, len(c['rungs'])):
@@ -326,7 +319,6 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8, spans=N
             ref = _ref(c)
             if levels[ref] >= floors[ref]:
                 continue
-            # Without t, coarsening a sensitive value cannot raise k or l (only lower l): dominated, skip it.
             if c.get('privacy_role') == 'sensitive_attribute' and 't' not in targets:
                 continue
             trial = {**levels, ref: levels[ref] + 1}
@@ -357,7 +349,7 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8, spans=N
                           (c.get('privacy_role') != 'sensitive_attribute' or 't' in targets))
     suppression = {}
     if not met(current) and len(trace) >= budget:
-        unexplored += 1  # local suppression not tried
+        unexplored += 1
     elif not met(current):
         prot = ev.build(levels)
         rules = {}
@@ -366,7 +358,6 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8, spans=N
             qis = ev.qis(table, df)
             threshold = targets['k']
             small = T.small_classes(df, qis, ev.subjects[table], threshold)
-            # Merge rare classes within budget even when k passes but l/t still fails.
             keys = pd.util.hash_pandas_object(df[qis].astype(str), index=False)
             sizes = ev.subjects[table].groupby(keys).transform('nunique')
             for size in sorted(sizes.unique()):
@@ -392,7 +383,6 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8, spans=N
                     not met(current), risk_score(current), current['information_loss']):
                 current, levels = best, best['levels']
                 current['accepted'] = True
-    # Without a t target it cannot affect selection; measure it once for the chosen candidate.
     current['risk'] = ev.risk(ev.build(levels, suppression), measure_t=True)
     out = deepcopy(plan)
     out.pop('conflict', None)

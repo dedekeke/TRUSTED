@@ -1,6 +1,6 @@
 """Requirement resolver: what a release must keep for its declared purpose.
 
-Three sources, one output shape (see README "Module contracts"):
+Three sources, one output shape (README, "Select module contracts"):
 - from_scenario: shipped scenario + toolkit utility tasks, parsed from `needs` and confirmed by probing.
 - from_spec: a small JSON spec for datasets without toolkit tasks.
 - no_purpose: nothing declared; utility is not assessed.
@@ -32,7 +32,7 @@ from pets_eval.io import get_scenario
 from pets_eval.utility import all_tasks
 
 TRUST_LEVELS = ("internal", "contractual", "controlled_research", "public")
-PRECISIONS = ("minute", "hour", "date", "week", "month", "year")  # finest first
+PRECISIONS = ("minute", "hour", "date", "week", "month", "year")
 NO_PURPOSE_WARNING = "no declared purpose: utility not assessed; only non-sensitive fields may be kept"
 _HINTS = {"time of day": "hour", "hour": "hour", "minute": "minute", "date": "date", "day": "date",
           "week": "week", "month": "month", "year": "year"}
@@ -62,7 +62,6 @@ def parse_targets(text):
     return out
 
 
-# ------------------------------------------------------------------ needs parsing
 def _task_tables(task, tables):
     if task.table == "*":
         return list(tables)
@@ -83,9 +82,9 @@ def _resolve(name, prefix, home, named, tables, warnings, need, global_fallback=
         warnings.append(f"{need!r}: '{prefix}.{name}' is not a column; ignored")
         return None
     hits = [t for t in home if t in tables and name in tables[t].columns]
-    if not hits:  # e.g. H-U7 lives on lab_results but needs ed_visits.temp_c: try the other tables the task names
+    if not hits:
         hits = [t for t in named if t in tables and name in tables[t].columns]
-    if not hits and global_fallback:  # e.g. ENERGY-U1 reads customers.postcode without naming the table
+    if not hits and global_fallback:
         others = [t for t in tables if name in tables[t].columns]
         if len(others) == 1:
             warnings.append(f"{need!r}: '{name}' found only in {others[0]}; resolved there")
@@ -113,7 +112,7 @@ def parse_needs(task, tables):
             refs = []
             for part in re.split(r"[+,]", alt):
                 prefix, part = None, part.strip()
-                if "." in part.split("/", 1)[0]:  # "t.a/b/c": the prefix applies to every name in the list
+                if "." in part.split("/", 1)[0]:
                     prefix, part = part.split(".", 1)
                     touched.add(prefix)
                 for name in part.split("/"):
@@ -121,6 +120,8 @@ def parse_needs(task, tables):
                     if ref and ref not in refs:
                         refs.append(ref)
                         touched.add(ref.split(".")[0])
+                    elif ref is None and prefix is None:
+                        touched.update(t for t in tables if name.strip() in tables[t].columns)
             if refs:
                 alternatives.append(refs)
         if hint is not None:
@@ -136,7 +137,6 @@ def parse_needs(task, tables):
             "tables": sorted(t for t in touched if t in tables), "warnings": warnings}
 
 
-# ------------------------------------------------------------------ probing
 def probe_task(task, tables, touched, tolerance=0.05):
     """Drop one column at a time from the touched tables and rerun the task on (original, reduced).
 
@@ -146,7 +146,7 @@ def probe_task(task, tables, touched, tolerance=0.05):
     out = {"baseline": None, "required": [], "affected": {}, "warnings": []}
     try:
         base = task.fn(tables, tables)["score"]
-    except Exception as e:  # task code is outside our control; report and skip probing
+    except Exception as e:
         out["warnings"].append(f"{task.id}: baseline run failed ({type(e).__name__}: {e}); not probed")
         return out
     if base is None:
@@ -225,7 +225,7 @@ def from_scenario(scenario_id, tables, root, probe=True, tolerance=0.05):
                     continue
                 if r not in alternatives:
                     columns.append(r)
-                elif p["affected"].get(r, 0) is None:  # the other alternatives cannot stand in for it
+                elif p["affected"].get(r, 0) is None:
                     columns.append(r)
                     req["warnings"].append(f"{task.id}: {r} is listed as an alternative, but the task is not "
                                            "answerable without it; marked required")
@@ -246,7 +246,6 @@ def from_scenario(scenario_id, tables, root, probe=True, tolerance=0.05):
     return req
 
 
-# ------------------------------------------------------------------ spec files
 _SPEC_KEYS = {"dataset", "trust_level", "targets", "required", "any_of", "joins", "subject_key"}
 _ITEM_KEYS = {"column", "precision", "task"}
 _TARGET_KEYS = {"k", "l", "t", "max_suppression"}

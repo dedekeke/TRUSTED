@@ -39,18 +39,16 @@ def test_should_find_keys_of_both_tables():
 
 
 def test_should_not_join_on_shared_category_column():
-    # z has 25 distinct values (passes the distinct floor) and full overlap, but is not a key in either table
     assert all("z" not in ref for p in pairs(discover(tables())) for ref in p)
 
 
 def test_should_not_join_on_few_distinct_values():
     t = {"a": pd.DataFrame({"k": [f"K{i:03d}" for i in range(50)]}),
-         "b": pd.DataFrame({"r": [f"K{i % 10:03d}" for i in range(200)]})}  # only 10 distinct: category-like
+         "b": pd.DataFrame({"r": [f"K{i % 10:03d}" for i in range(200)]})}
     assert discover(t)["joins"] == []
 
 
 def test_should_reject_join_below_coverage_threshold():
-    # every 10th child row points past the key: 10% of the child's distinct values are orphans
     assert discover(tables(shift=1000))["joins"] == []
 
 
@@ -79,7 +77,7 @@ def test_should_not_count_all_blank_column_as_subject():
 
 def test_should_override_discovery_with_declared_join_and_flag_low_coverage():
     t = tables(shift=1000)
-    t["b"]["w"] = t["a"]["x"].reindex(range(300)).fillna("").tolist()  # discovered: a.x -> b.w (full coverage)
+    t["b"]["w"] = t["a"]["x"].reindex(range(300)).fillna("").tolist()
     r = discover(t, declared={"joins": [["a.x", "b.y"], ["a.x", "b.missing"]]})
     j = {(x["parent"], x["child"]): x for x in r["joins"]}
     assert set(j) == {("a.x", "b.w"), ("a.x", "b.y"), ("a.x", "b.missing")}
@@ -114,18 +112,18 @@ def _measured(monkeypatch, t):
 
 def test_format_filter_alone_should_reject_other_shape(monkeypatch):
     t = tables()
-    t["b"]["y"] = t["b"]["y"].str.replace("V", "V-")  # V-00001 vs V00001: shape differs
+    t["b"]["y"] = t["b"]["y"].str.replace("V", "V-")
     assert _measured(monkeypatch, {"a": t["a"][["x"]], "b": t["b"][["y"]]}) == []
 
 
 def test_format_filter_alone_should_reject_other_length(monkeypatch):
     t = {"a": pd.DataFrame({"k": [f"V{i:05d}" for i in range(100)]}),
-         "b": pd.DataFrame({"r": [f"V{i:08d}" for i in range(100)]})}  # same shape, longer
+         "b": pd.DataFrame({"r": [f"V{i:08d}" for i in range(100)]})}
     assert _measured(monkeypatch, t) == []
 
 
 def test_should_not_join_integer_measure_to_dense_integer_key():
-    t = {"a": pd.DataFrame({"id": [str(i) for i in range(1, 5001)]}),  # a row counter 1..N
+    t = {"a": pd.DataFrame({"id": [str(i) for i in range(1, 5001)]}),
          "b": pd.DataFrame({"duration_s": [str(1000 + i % 300) for i in range(400)]})}
     assert ("a.id" in [k["column"] for k in discover(t)["keys"]], discover(t)["joins"]) == (True, [])
 
@@ -138,7 +136,7 @@ def test_should_keep_declared_join_on_dense_integer_key():
 
 
 def test_should_not_join_child_labelled_as_measure():
-    t = {"a": pd.DataFrame({"id": [str(1000 + 7 * i) for i in range(500)]}),  # sparse integer key
+    t = {"a": pd.DataFrame({"id": [str(1000 + 7 * i) for i in range(500)]}),
          "b": pd.DataFrame({"n": [str(1000 + 7 * (i % 40)) for i in range(400)]})}
     lab = labels([("a", "id", "record_key", "RECORD_ID"), ("b", "n", "quasi_identifier", "OTHER")])
     assert (discover(t)["joins"] != [], discover(t, lab)["joins"]) == (True, [])
@@ -261,14 +259,14 @@ def energy_like(n=120):
 def test_s1_person_rows_use_their_record_key_and_children_inherit_it():
     t, lab = energy_like()
     r = discover(t, lab)
-    assert r["subject_keys"]["customers"] == "customers.customer_id"   # hetu 11% blank: not a key, yet rows are people
+    assert r["subject_keys"]["customers"] == "customers.customer_id"
     assert r["subject_paths"]["readings"] == ["readings.metering_point_id", "customers.metering_point_id",
                                               "customers.customer_id"]
 
 
 def test_s1_needs_a_person_identifier_unique_per_row():
     t, lab = energy_like()
-    t["customers"]["hetu"] = "010101-901X"                              # the same value everywhere: not one per person
+    t["customers"]["hetu"] = "010101-901X"
     assert "customers" not in discover(t, lab)["subject_keys"]
 
 
@@ -287,5 +285,5 @@ def test_s3_adopts_only_confident_complete_detect_suggestions_for_unresolved_tab
            {"table": "b", "column": "q", "confidence": .92, "needs_review": False, "non_blank_share": .99},
            {"table": "c", "column": "r", "confidence": .99, "needs_review": True, "non_blank_share": 1.0}]
     out = relations.adopt_detect_subjects(rel, sug)
-    assert out["subject_keys"] == {"a": "a.x", "b": "b.q"}             # a kept; b.p too sparse; c under review
+    assert out["subject_keys"] == {"a": "a.x", "b": "b.q"}
     assert any(n.startswith("subject_adopted: b.q") for n in out["notices"])

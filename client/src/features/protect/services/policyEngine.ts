@@ -1,8 +1,3 @@
-/**
- * Select step: choose a PET for every column from its detected role/subtype and the sharing scenario.
- * Strictness comes from the scenario's trust level (public > contractual > internal / controlled research).
- * Every choice carries a one-sentence rationale for the demo.
- */
 import type { ColumnDetection, ColumnPolicy, PetId, Scenario } from '@/types/pipeline.types'
 import { TRUST_META } from '@/utils/constants'
 
@@ -209,11 +204,6 @@ export function choosePolicies(dets: ColumnDetection[], scenario: Scenario | nul
 
 const GENERIC = new Set(['band', 'area', 'week', 'month', 'year', 'type', 'code', 'group', 'level', 'on', 'of'])
 
-/**
- * Quasi-identifiers named in the scenario's privacy target, e.g. HEALTH-S1 "k>=5 on (age band, sex, municipality,
- * arrival week)", matched to the detected columns. k-anonymity is enforced on exactly these, as the recipient's
- * threat model describes; returns null when the scenario names none.
- */
 export function scenarioKQis(
   scenario: Scenario | null,
   dets: ColumnDetection[],

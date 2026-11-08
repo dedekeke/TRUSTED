@@ -73,7 +73,6 @@ def main(root=None, base: str = ""):
     out_dir.mkdir(parents=True, exist_ok=True)
     datasets = sorted(labels.dataset.unique())
     tables = {ds: load_dataset(data_dir / ds) for ds in datasets}
-    # value sets of identifier columns, for cross-dataset overlap
     idsets = {}
     for _, row in labels[labels.subtype.isin(SHARE_SUBTYPES)].iterrows():
         df = tables[row.dataset].get(row.table)
