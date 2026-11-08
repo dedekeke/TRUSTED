@@ -8,7 +8,6 @@ import { JOB_META } from '../stepMeta'
 import StatusIcon from './StatusIcon'
 import RunTimeline from './RunTimeline'
 
-/** One run: header (dataset, scenario, state, parameters) and the step timeline. */
 export default function JobView({ id }: { id: string }) {
   const navigate = useNavigate()
   const { job, error, refresh, setJob } = useJob(id)

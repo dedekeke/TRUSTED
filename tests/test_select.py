@@ -62,7 +62,7 @@ def test_join_shares_domain_and_identifiers_never_kept():
     c = by_ref(select(tables, labels, rel, req))
     assert c["visits.vid"]["action"] == c["labs.vid"]["action"] == "HMAC"
     assert c["visits.vid"]["params"]["domain"] == c["labs.vid"]["params"]["domain"]
-    assert c["visits.pid"]["action"] == "HMAC"  # any_of: the only usable alternative
+    assert c["visits.pid"]["action"] == "HMAC"
     assert c["visits.pid"]["params"]["domain"] != c["visits.vid"]["params"]["domain"]
     assert c["visits.name"]["action"] == "DROP"
 
@@ -105,7 +105,7 @@ def test_blocks_missing_or_uncertain_required_columns():
 
 def test_any_of_without_usable_alternative_blocks():
     tables, labels, rel, req = inputs()
-    req["any_of"] = [["visits.readmit", "visits.other+visits.more"]]  # legacy string form
+    req["any_of"] = [["visits.readmit", "visits.other+visits.more"]]
     assert select(tables, labels, rel, req)["status"] == "blocked"
 
 
@@ -131,7 +131,7 @@ def test_unconfirmed_same_name_join_does_not_share_domain():
     rel["joins"] = []
     plan = select(tables, labels, rel, req)
     assert plan["status"] == "blocked" and any("relations found no join" in e for e in plan["errors"])
-    req["joins"][0]["columns"] = ["visits.arrival", "labs.ts"]  # non-identifier name match: warn, don't join
+    req["joins"][0]["columns"] = ["visits.arrival", "labs.ts"]
     plan = select(tables, labels, rel, req)
     assert any("not treated as a join" in w for w in plan["warnings"])
 

@@ -26,8 +26,6 @@ import pets_detect_v2.classifier as _clf_mod
 import pets_detect_v2.features as _feat_mod
 from pets_detect_v2.classifier import ColumnClassifier
 
-# fitted value models shared by every Router in this process (the ablation / compare runs build many detectors
-# over the same training data); keyed by a hash of the training inputs, so different data never collide
 _FIT_MEMO: dict[str, ColumnClassifier] = {}
 _CODE = hashlib.sha256(b"".join(Path(m.__file__).read_bytes() for m in (_clf_mod, _feat_mod))
                        + sklearn.__version__.encode()).hexdigest()[:12]
@@ -52,7 +50,6 @@ class Router:
         self.cache = None if cache_dir is None or os.environ.get("DETECT_V3_NO_MODEL_CACHE") else Path(cache_dir)
         self._train_hash: str | None = None
 
-    # ---- value model (LogReg), leave-one-dataset-out, memoised + disk-cached + fitted in parallel ----
     def _fit_args(self, dataset: str):
         idx = [i for i, (p, _, _) in enumerate(self.train) if p["dataset"] != dataset]
         return ([self.blind_train[i] for i in idx], [self.blind_t1[i] for i in idx],
@@ -72,7 +69,7 @@ class Router:
         if m is None and self.cache is not None and (self.cache / f"{key}.pkl").exists():
             try:
                 m = pickle.loads((self.cache / f"{key}.pkl").read_bytes())
-            except Exception:  # stale / truncated file: refit
+            except Exception:
                 m = None
         if m is not None:
             self._store(dataset, m, disk=False)
@@ -100,7 +97,7 @@ class Router:
                 for d, m in zip(todo, models):
                     self._store(d, m)
                 return
-            except Exception as e:  # no worker processes available (sandbox, frozen app): fit sequentially
+            except Exception as e:
                 print(f"[v3] parallel fit failed ({e!r}), fitting sequentially", flush=True)
         for d in todo:
             self._store(d, _fit_one(*self._fit_args(d)))
@@ -136,8 +133,6 @@ class Router:
         if self.mode == "logreg":
             return 0.0
         if info == 0.0 and table_visible:
-            # code-like column name, but kNN still sees the table name; the ablation (mixed view) showed kNN alone
-            # beats a 50/50 blend here (0.810 vs 0.796), so any name context -> kNN; no name at all -> LogReg
             return 1.0
         if self.mode == "A1":
             return 1.0 if info >= 0.5 else 0.0

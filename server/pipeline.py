@@ -24,7 +24,6 @@ from pathlib import Path
 DETECT_SRC = Path(__file__).resolve().parent / "detect"
 KEY_ENV = "PRIVACY_TOOL_HMAC_KEY"
 STAGES = ("detect", "select", "search", "transform")
-# The one source of run parameters shared by this CLI and server.api, so a UI run equals a CLI run.
 WARN_STATUSES = {"target_unmet", "budget_exhausted"}
 DEFAULTS = {"budget": 50, "tau": 0.8, "llm": False, "text_fallback": None, "allow_unapproved": False,
             "no_scorecard": False}
@@ -48,11 +47,11 @@ def warn_only(st: dict) -> bool:
 
 
 def _detect(a, out: Path, detect_fn=None) -> dict:
-    if detect_fn is not None:  # injected detector (tests); it writes a contract-v1 detect dir
+    if detect_fn is not None:
         detect_fn(a.model, a.data, out)
         m = json.loads((out / "manifest.json").read_text())
     else:
-        if str(DETECT_SRC) not in sys.path:  # detect packages live in server/detect (not an importable package path)
+        if str(DETECT_SRC) not in sys.path:
             sys.path.insert(0, str(DETECT_SRC))
         from pets_detect_v3 import deploy
         m = deploy.infer(a.model, a.data, out, llm=a.llm, model_sha256=a.model_sha256)
@@ -72,7 +71,7 @@ def run(a, on_step=None, detect_fn=None, start: str = "detect", attempt: int = 1
     detect/ is reused. Behaviour of every stage is the stage CLI's own."""
     from server.select.__main__ import main as select_main
     from server.transform.__main__ import main as transform_main
-    for k, v in DEFAULTS.items():  # namespaces built by callers (server.api) may omit defaulted options
+    for k, v in DEFAULTS.items():
         if not hasattr(a, k):
             setattr(a, k, v)
     out = Path(a.out)
@@ -162,7 +161,7 @@ def run(a, on_step=None, detect_fn=None, start: str = "detect", attempt: int = 1
 def _call(fn, argv) -> int:
     try:
         return int(fn(argv) or 0)
-    except SystemExit as e:  # stage CLIs exit with a message on argument/environment errors
+    except SystemExit as e:
         if e.code not in (None, 0) and not isinstance(e.code, int):
             print(e.code, file=sys.stderr)
         return e.code if isinstance(e.code, int) else 1

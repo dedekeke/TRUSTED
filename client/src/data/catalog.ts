@@ -1,7 +1,5 @@
-// Hardcoded demo data (synthetic, from the TrustED PETs Proving Ground 2026 package, CC BY 4.0 © Since AI ry).
 import type { CatalogEntry } from '@/types/data.types'
 
-/** gold field labels (metadata/field_catalog.csv) for the sample tables */
 export const CATALOG: CatalogEntry[] = [
  {
   "dataset": "health",

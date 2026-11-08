@@ -66,7 +66,6 @@ function compare(a: Cell, b: Cell) {
   return String(a ?? '').localeCompare(String(b ?? ''))
 }
 
-/** Any step table from the API ({columns, rows}) with sorting, per-column filters for categories, and search. */
 export default function StepTable({ table, highlightFirst }: { table: ViewTable; highlightFirst?: boolean }) {
   const [q, setQ] = useState('')
   const rows = useMemo(() => {

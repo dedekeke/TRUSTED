@@ -70,8 +70,6 @@ def plan(tmp, out='select'):
     return json.loads((tmp / out / 'decisions.json').read_text())
 
 
-# ---------------------------------------------------------------- provenance
-
 def test_bound_select_then_search_keeps_provenance_and_plan_sha(env, monkeypatch):
     tmp, data, lab = env
     assert run_select(tmp, data, lab) == 0
@@ -107,7 +105,7 @@ def rejected(capsys, code):
 def test_one_changed_cell_rejects_labels_with_named_table(env, capsys):
     tmp, data, lab = env
     df = pd.read_csv(data / 'people.csv', dtype=str, keep_default_na=False)
-    df.loc[1, 'score'] = '15'  # same schema and row count, different bytes
+    df.loc[1, 'score'] = '15'
     df.to_csv(data / 'people.csv', index=False)
     assert run_select(tmp, data, lab) == 2
     assert 'people' in rejected(capsys, 'input_mismatch') and not (tmp / 'select').exists()
@@ -165,13 +163,11 @@ def test_legacy_detector_is_marked_unbound(tmp_path, monkeypatch):
     assert any('provenance unbound' in w for w in p['warnings']) and 'UNBOUND' in render_md(tmp_path)
 
 
-# ---------------------------------------------------------------- spans and linkage
-
 def test_stale_span_offsets_and_ids_block(tmp_path):
     data = write_data(tmp_path)
     good = note_span(data)
-    long = span(fingerprint(data)[1], 'people', 'note', 0, 8, 99)  # beyond the cell
-    old = {**good, 'span_id': span('0' * 64, 'people', 'note', 0, 8, 21)['span_id']}  # other revision
+    long = span(fingerprint(data)[1], 'people', 'note', 0, 8, 99)
+    old = {**good, 'span_id': span('0' * 64, 'people', 'note', 0, 8, 21)['span_id']}
     lab = write_detect_dir(tmp_path / 'detect', data, labels(), [good, long, old])
     assert run_select(tmp_path, data, lab) == 2
     p = plan(tmp_path)
@@ -192,14 +188,12 @@ def test_missing_span_evidence_blocks_released_free_text_only(tmp_path):
 def test_ambiguous_or_conflicting_join_blocks(tmp_path, relations):
     data = write_data(tmp_path)
     lab = write_detect_dir(tmp_path / 'detect', data, labels(), [note_span(data)], relations)
-    assert run_select(tmp_path, data, lab, out='unused') == 0  # touches no released column: warning only
+    assert run_select(tmp_path, data, lab, out='unused') == 0
     assert any(w.startswith('ambiguous_join') for w in plan(tmp_path, 'unused')['warnings'])
     assert run_select(tmp_path, data, lab, required=('people.score', 'people.id')) == 2
     p = plan(tmp_path)
     assert any(e.startswith('ambiguous_join') for e in p['errors']) and p['evidence']['linkage']['ambiguous']
 
-
-# ---------------------------------------------------------------- coverage and reviews
 
 def test_whole_vocabulary_maps_to_a_policy_or_unsupported_label():
     for role in sorted(policy.ROLES):
@@ -217,7 +211,6 @@ def test_whole_vocabulary_maps_to_a_policy_or_unsupported_label():
 
 def test_unsupported_vocabulary_pair_is_named(tmp_path):
     data = write_data(tmp_path)
-    # (URL gained a ladder in S5; AGGREGATE as a quasi-identifier still has none)
     vocab = [['non_sensitive', 'MEASUREMENT'], ['non_sensitive', 'SECRET'], ['quasi_identifier', 'AGGREGATE']]
     lab = write_detect_dir(tmp_path / 'detect', data, labels(), [note_span(data)], vocabulary=vocab)
     assert run_select(tmp_path, data, lab) == 0
@@ -279,8 +272,6 @@ def test_downgrade_guard_and_recorded_downgrade(tmp_path):
     assert p['reviews'][0]['downgrade'] is True and any('downgrade explicitly allowed' in w for w in p['warnings'])
 
 
-# ---------------------------------------------------------------- runtime guard
-
 def test_selection_never_reads_catalog_truth_or_gold_spans(env, monkeypatch):
     tmp, data, lab = env
     real = builtins.open
@@ -297,8 +288,6 @@ def test_selection_never_reads_catalog_truth_or_gold_spans(env, monkeypatch):
     assert main(['search', '--data', str(data), '--plan', str(tmp / 'select' / 'decisions.json'),
                  '--out', str(tmp / 'search')]) == 0
 
-
-# ---------------------------------------------------------------- review fixes
 
 def test_scanned_clean_free_text_column_is_not_missing_evidence(tmp_path):
     data = write_data(tmp_path)
@@ -391,6 +380,6 @@ def test_embedded_identifier_released_in_a_revealing_form_warns_without_echoing(
     errors, warnings, summary = check_evidence(plan, tables, lab, {'dataset_fingerprint': 'f' * 64,
                                                                    '_paths': {'linkage': path}})
     emb = [w for w in warnings if w.startswith('embedded_qi')]
-    assert len(emb) == 1 and 'people.ip' in emb[0] and 'a' * 16 in emb[0]  # the /24 keeps provider/location
+    assert len(emb) == 1 and 'people.ip' in emb[0] and 'a' * 16 in emb[0]
     assert not errors and summary['linkage']['embedded'] == 3
     assert 'SECRET-FREE-TEXT' not in json.dumps([errors, warnings, summary]) and 'gone' not in json.dumps(warnings)

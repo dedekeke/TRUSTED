@@ -18,8 +18,8 @@ class TestChecksums(unittest.TestCase):
     def test_hetu(self):
         self.assertTrue(P.hetu_valid("070889-9652"))
         self.assertTrue(P.hetu_valid("271206A922C"))
-        self.assertTrue(P.hetu_valid("200278907W"))       # separator stripped, as in messy exports
-        self.assertFalse(P.hetu_valid("070889-9653"))      # wrong check character
+        self.assertTrue(P.hetu_valid("200278907W"))
+        self.assertFalse(P.hetu_valid("070889-9653"))
         self.assertFalse(P.hetu_valid("47109723"))
 
     def test_iban_luhn(self):
@@ -52,7 +52,7 @@ class TestRules(unittest.TestCase):
 class TestGuardrail(unittest.TestCase):
     def test_rejects_llm_answers_that_contradict_statistics(self):
         from pets_detect.pipeline import implausible
-        campaign = _prof(["C-01", "C-02", "none"] * 50)            # few repeated values
+        campaign = _prof(["C-01", "C-02", "none"] * 50)
         self.assertIsNotNone(implausible("record_key", campaign))
         self.assertIsNotNone(implausible("technical_identifier", campaign))
         self.assertIsNotNone(implausible("free_text", _prof(["sms", "app", "totp"] * 50)))
@@ -68,7 +68,7 @@ class _FakeOllama(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        assert body["format"]["properties"]["privacy_role"]["enum"]  # schema-constrained output requested
+        assert body["format"]["properties"]["privacy_role"]["enum"]
         assert body["options"]["temperature"] == 0
         ans = {"privacy_role": "sensitive_attribute", "subtype": "FINANCIAL_DATA", "confidence": .8,
                "reason": "salary-like amounts in an HR export"}
@@ -93,7 +93,7 @@ class TestLLM(unittest.TestCase):
             d = llm.classify(p, [], tier1(p))
             self.assertEqual((d.privacy_role, d.source), ("sensitive_attribute", "llm"))
             srv.shutdown()
-            d2 = llm.classify(p, [], tier1(p))  # served from cache with the server down
+            d2 = llm.classify(p, [], tier1(p))
             self.assertEqual(d2.subtype, "FINANCIAL_DATA")
 
     def test_no_server_falls_back(self):

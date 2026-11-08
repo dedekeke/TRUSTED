@@ -14,11 +14,11 @@ def prof(values, name="c", fk_to=()):
 
 
 def test_gps_subtype_needs_coordinate_shaped_values():
-    money = prof([f"{i}.{i % 100:02d}" for i in range(10, 300)])               # 2-decimal amounts
-    coords = prof([f"60.{450000 + i}" for i in range(200)] + ["22.267"] * 100)  # some coordinates with 3 decimals
+    money = prof([f"{i}.{i % 100:02d}" for i in range(10, 300)])
+    coords = prof([f"60.{450000 + i}" for i in range(200)] + ["22.267"] * 100)
     assert guardrail(money, "", "GPS_COORDINATE") is not None
     assert guardrail(coords, "", "GPS_COORDINATE") is None
-    assert guardrail(money, "", "MEASUREMENT") is None                          # other subtypes are untouched
+    assert guardrail(money, "", "MEASUREMENT") is None
 
 
 def test_payment_card_still_needs_luhn_or_masking():
@@ -30,5 +30,5 @@ def test_own_name_decides_the_id_subtype_before_the_referenced_table():
     vals = [f"64300000000{i:07d}" for i in range(40)] * 3
     meter = structure_rules(prof(vals, "metering_point_id", ["customers.metering_point_id"]))
     assert meter.subtype == "METER_ID"
-    anon = structure_rules(prof(vals, "ref", ["customers.customer_id"]))   # no hint in the name: use the target
+    anon = structure_rules(prof(vals, "ref", ["customers.customer_id"]))
     assert anon.subtype == "CUSTOMER_ID"

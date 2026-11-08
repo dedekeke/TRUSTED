@@ -12,7 +12,6 @@ interface Props {
   detections: ColumnDetection[]
 }
 
-/** Requirement 5: the sharing scenario the output is fit for, with the risks that remain (honest limitations). */
 export default function ScenarioFit({ scenario, ev, result, detections }: Props) {
   const residualTotal = Object.values(ev.residual.counts).reduce((a, b) => a + b, 0)
   const pseudonymised = result.policies.filter((p) => p.pet === 'pseudonymise').map((p) => p.column)

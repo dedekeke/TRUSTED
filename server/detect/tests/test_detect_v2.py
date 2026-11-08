@@ -71,7 +71,6 @@ class _Fake(BaseHTTPRequestHandler):
         if "table_domain" in props:
             out = {"table_domain": "pay roll of employees", "data_subject": "employee"}
         else:
-            # answer depends on the column in the prompt: salaries -> sensitive
             p = body["messages"][0]["content"]
             sens = "2 968,36" in p.split("COLUMN TO CLASSIFY:")[1]
             out = {"evidence": "pay" if sens else "code", "privacy_role": "sensitive_attribute" if sens
@@ -109,7 +108,6 @@ class TestTableLLM(unittest.TestCase):
             self.assertEqual(set(ans), {1, 2})
             self.assertEqual(ans[1]["privacy_role"], "sensitive_attribute")
             self.assertEqual(ans[2]["privacy_role"], "non_sensitive")
-            # second run comes from the cache
             llm2 = TableLLM("fake:1", f"http://127.0.0.1:{self.srv.server_port}", cache_dir=d)
             llm2.label_table("(hidden)", ps, [("record_key", "RECORD_ID", .99)] * 3, [1, 2], False)
             self.assertEqual(llm2.calls, 0)

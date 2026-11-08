@@ -38,12 +38,12 @@ class Config:
     tiers: tuple = (1, 2, 3)
     embedder: str = "tfidf"
     k: int = 7
-    rule_accept: float = 0.85      # tier-1 decisions at or above this confidence are final
-    llm_below: float = 0.60        # call the LLM when the combined confidence is below this
+    rule_accept: float = 0.85
+    llm_below: float = 0.60
     llm_model: str | None = None
-    blind_names: bool = False      # ignore column/table names (simulates obfuscated exports)
-    exclude_self: bool = True      # never retrieve labelled columns of the dataset being detected
-    context: str = ""              # one-sentence description of the dataset, given by the data owner
+    blind_names: bool = False
+    exclude_self: bool = True
+    context: str = ""
     extra: dict = field(default_factory=dict)
 
 
@@ -115,7 +115,7 @@ class Detector:
                                           f"={d['privacy_role']}({s:.2f})" for d, s in neighbours[:3])
             if 2 in cfg.tiers:
                 probs, best_sub = self.kb.vote(neighbours)
-                a = t1.confidence  # trust the rules in proportion to their confidence
+                a = t1.confidence
                 comb = {r: (1 - a) * probs[r] + (a if r == t1.privacy_role else 0.0) for r in ROLES}
                 role = max(comb, key=comb.get)
                 if role == t1.privacy_role:

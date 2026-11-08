@@ -7,7 +7,6 @@ import type { Scenario } from '@/types/pipeline.types'
 import type { Job, StartOptions, StepName, StepView } from '@/types/job.types'
 import type { RunState } from '@/types/run.types'
 
-/** Error with the backend's named code (e.g. input_mismatch, step_done, blocked). */
 export class ApiError extends Error {
   readonly code: string
   constructor(code: string, message: string) {
@@ -37,7 +36,6 @@ export interface Confirmation {
   subtype: string
 }
 
-/** The server/api.py pipeline (Detect → confirm → Select → Search). Used when VITE_API_BASE_URL is set. */
 export const backend = {
   enabled: appConfig.apiBaseUrl !== '',
   datasets: () => request<{ datasets: string[] }>('/datasets').then((r) => r.datasets),
@@ -51,19 +49,18 @@ export const backend = {
 
 const jobPath = (id: string) => `/jobs/${encodeURIComponent(id)}`
 
-/** UI pipeline jobs: one start runs every step in the background; the UI polls the job and reads step views. */
 export const jobs = {
   create: (source: { dataset: string } | { upload: string }) => request<Job>('/jobs', source),
   get: (id: string) => request<Job>(jobPath(id)),
   start: (id: string, options: StartOptions) => request<Job>(`${jobPath(id)}/start`, options),
   confirm: (id: string, confirmations: Confirmation[], allowDowngrade = false) =>
     request<Job>(`${jobPath(id)}/confirm`, { confirmations, allow_downgrade: allowDowngrade }),
-  /** keepalive lets the request finish while the page unloads (refresh / close). */
+
   cancel: (id: string, keepalive = false) => request<Job>(`${jobPath(id)}/cancel`, {}, keepalive),
   step: (id: string, step: StepName) => request<StepView>(`${jobPath(id)}/steps/${step}`),
   log: (id: string, step: StepName) => request<{ step: StepName; log: string }>(`${jobPath(id)}/steps/${step}/log`),
   downloadUrl: (id: string) => `${base}/api${jobPath(id)}/download`,
-  /** PUT one CSV as raw bytes (the server hashes exactly what it receives). */
+
   upload: async (id: string, file: File, onProgress?: (share: number) => void) =>
     new Promise<{ file: string; bytes: number; sha256: string }>((resolve, reject) => {
       const xhr = new XMLHttpRequest()
@@ -85,7 +82,6 @@ export const jobs = {
     }),
 }
 
-/** Static data for the in-browser mode; scenarios come from the backend when it is configured. */
 export const api = {
   scenarios: async (): Promise<Scenario[]> =>
     backend.enabled ? (await request<{ scenarios: Scenario[] }>('/scenarios')).scenarios : SCENARIOS,

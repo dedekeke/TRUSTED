@@ -61,7 +61,6 @@ def value_rules(p: dict) -> Decision | None:
     for key, thr, role, st, conf, why in checks:
         if p[key] >= thr:
             return Decision(role, st, conf, f"{_pct(p[key])} of values are {why}")
-    # card numbers: Luhn-valid 13-19 digits that are not mostly phone numbers
     if p["m_pan"] >= .6 and p["m_phone"] < .3:
         return Decision("direct_identifier", "PAYMENT_CARD", .92, f"{_pct(p['m_pan'])} Luhn-valid card numbers")
     if p["m_phone"] >= .6:
@@ -69,11 +68,9 @@ def value_rules(p: dict) -> Decision | None:
     if p["m_address"] >= .6 and p["unique_ratio"] > .1:
         return Decision("direct_identifier", "STREET_ADDRESS", .85,
                         f"{_pct(p['m_address'])} of values look like street addresses")
-    # free text: long, multi-word values
     if p["mean_words"] >= 5 and p["unique_ratio"] > .3:
         return Decision("free_text", "FREE_TEXT", .9,
                         f"long free text (avg {p['mean_words']:.1f} words, {_pct(p['unique_ratio'])} unique)")
-    # timestamps / dates
     if p["m_timestamp"] >= .6:
         return Decision("quasi_identifier", "TIMESTAMP", .8, f"{_pct(p['m_timestamp'])} of values are date-times")
     if p["m_date"] >= .6 or (p["m_month"] >= .6 and p["n_unique"] > 3):
@@ -94,7 +91,6 @@ def value_rules(p: dict) -> Decision | None:
         return Decision("quasi_identifier", "MUNICIPALITY", .8, f"{_pct(p['m_municipality'])} known municipalities")
     if p["m_country"] >= .7:
         return Decision("quasi_identifier", "LOCATION_NAME", .7, "country names/codes")
-    # person names: 2-4 capitalised tokens, high cardinality, not organisations
     if (p["m_name_shape"] >= .7 and p["unique_ratio"] >= .1 and p["n_unique"] > 20 and p["m_org_suffix"] < .2
             and (p["m_first_name"] >= .2 or p["m_surname_suffix"] >= .4)):
         conf = .95 if p["m_first_name"] >= .3 else .85
@@ -119,8 +115,6 @@ def structure_rules(p: dict) -> Decision | None:
     if not id_like:
         return None
     if p["fk_to"] and p["unique_ratio"] < .99:
-        # the column's own name first (metering_point_id -> METER_ID even when it points at customers);
-        # the referenced table/column only when the name says nothing
         st = _id_subtype(name, "") or _id_subtype(" ".join(p["fk_to"]).lower())
         return Decision("technical_identifier", st, .8,
                         f"foreign key to {', '.join(p['fk_to'][:2])}: links all records of one entity")

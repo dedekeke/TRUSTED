@@ -13,14 +13,11 @@ from __future__ import annotations
 import re
 
 NUM_WORDS = {
-    # Finnish
     "nolla", "yksi", "kaksi", "kolme", "neljä", "viisi", "kuusi", "seitsemän", "kahdeksan", "yhdeksän",
-    # Swedish
     "noll", "ett", "en", "två", "tre", "fyra", "fem", "sex", "sju", "åtta", "nio",
-    # English
     "zero", "oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
 }
-WEAK = {"en", "ett", "oh", "one", "sex", "tre"}  # also ordinary words: need a stronger neighbour
+WEAK = {"en", "ett", "oh", "one", "sex", "tre"}
 SEPS = {"viiva", "streck", "dash", "miinus", "väliviiva", "bindestreck"}
 
 TOK = re.compile(r"[\wåäöÅÄÖ]+|[,\-]")
@@ -72,7 +69,6 @@ def find(text: str) -> list[dict]:
         w = toks[i][0].lower()
         has_fi = False
         j = i
-        # optional spelled country code "f i" before an IBAN
         if w == "f" and i + 1 < n and toks[i + 1][0].lower() == "i":
             has_fi, j = True, i + 2
         if j < n and _digits(toks[j][0]) == 0:
@@ -93,7 +89,6 @@ def find(text: str) -> list[dict]:
             k += 1
         if words >= 3 and digits >= 4 or (words >= 1 and digits >= 7):
             first = toks[i if has_fi else start_tok]
-            # weak words alone ("en", "sex") are not numbers
             if not (words == digits and all(toks[x][0].lower() in WEAK for x in range(start_tok, last + 1)
                                             if _digits(toks[x][0]))):
                 label, conf = _label_for(text, first[1], digits, has_fi)

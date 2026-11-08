@@ -1,7 +1,3 @@
-/**
- * Rule-based field detector: column-name keywords (English, Finnish, Swedish) + value patterns + column statistics.
- * Every decision carries human-readable reasons, so the demo can explain *why* a column got its label.
- */
 import type { ColumnDetection, ColumnStats, PrivacyRole, Row } from '@/types/pipeline.types'
 import { VALUE_PATTERNS, matchFull } from '@/utils/patterns'
 import { parseDate } from '@/utils/dates'
@@ -15,7 +11,6 @@ interface Verdict {
 
 type NameRule = [RegExp, PrivacyRole, string]
 
-/** Ordered: the first matching name rule wins. Exceptions come before the general rules. */
 const NAME_RULES: NameRule[] = [
   [/(hetu|ssn|national_?id|henkilotunnus|personal_?code|personnummer)/, 'direct_identifier', 'NATIONAL_ID'],
   [/(user_?agent)/, 'technical_identifier', 'USER_AGENT'],
@@ -185,7 +180,7 @@ function byValues(s: ColumnStats, values: string[], index: number): Verdict | nu
       ...v('direct_identifier', 'PERSON_NAME', share(s, 'PERSON_NAME'), 'person names (2–4 capitalised words)'),
       confidence: 0.8,
     }
-  // ID-like codes
+
   if (share(s, 'CODE_ID') >= strong && s.uniqueRatio > 0.95 && index === 0)
     return {
       role: 'record_key',
@@ -195,7 +190,7 @@ function byValues(s: ColumnStats, values: string[], index: number): Verdict | nu
     }
   if (share(s, 'CODE_ID') >= strong && s.uniqueRatio > 0.2)
     return v('technical_identifier', 'OTHER', share(s, 'CODE_ID'), 'system codes that single out a person or account')
-  // free text: long, varied, many words
+
   const words = s.examples.reduce((a, e) => a + e.split(/\s+/).length, 0) / Math.max(1, s.examples.length)
   if (s.avgLength > 30 && words > 4 && s.uniqueRatio > 0.5)
     return {
@@ -260,7 +255,6 @@ export function detectColumn(column: string, values: string[], index: number): C
     reasons.push(pick.reason)
   }
 
-  // the first column that is unique per row and not a known identifier is the row key
   if (
     index === 0 &&
     stats.uniqueRatio > 0.98 &&

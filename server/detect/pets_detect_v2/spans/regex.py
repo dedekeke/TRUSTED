@@ -79,8 +79,6 @@ def find(text: str) -> list[Span]:
             out.append(_sp(m, "IP_ADDRESS", .9))
     for m in RX_PLATE.finditer(text):
         out.append(_sp(m, "LICENSE_PLATE", .85))
-    # DATE is not found here: whether a date is personal depends on context (a payment message date is not
-    # labelled, a date in a clinical note is). The tagger decides, with "matches a date pattern" as a feature.
     for m in RX_ACCOUNT.finditer(text):
         out.append(_sp(m, "ACCOUNT_NUMBER", .6))
     for m in RX_AGE.finditer(text):
@@ -90,7 +88,6 @@ def find(text: str) -> list[Span]:
     return out
 
 
-# ---- organisers' B2 baseline, as spans (for the comparison) ------------------------------------------------
 B2_RX = [
     ("NATIONAL_ID", re.compile(r"\b\d{6}[-+A-FU-Y]\d{3}[0-9A-Y]\b")),
     ("EMAIL", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")),

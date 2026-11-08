@@ -17,7 +17,7 @@ export default function ScenarioPanel() {
       ),
     })),
   }))
-  // matching dataset first
+
   if (dataset?.dataset) options.sort((a, b) => (a.label === dataset.dataset ? -1 : b.label === dataset.dataset ? 1 : 0))
 
   return (

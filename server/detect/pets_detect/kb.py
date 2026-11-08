@@ -102,7 +102,7 @@ class KnowledgeBase:
 
     def _text(self, p: dict) -> str:
         t = profile_text(p)
-        if not self.use_names:  # name-blind mode: drop column/table names, like an obfuscated export
+        if not self.use_names:
             t = " | ".join(x for x in t.split(" | ") if not x.startswith(("column ", "table ")))
         return t
 

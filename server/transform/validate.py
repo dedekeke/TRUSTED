@@ -20,7 +20,7 @@ from .files import MISSING_TOKENS, read_csv, sha256_file
 
 HEX32 = re.compile(r"[0-9a-f]{32}")
 AGE_BAND = r"\d+-\d+|\d+\+"
-FORMAT_RX = {  # allowed non-blank output per method
+FORMAT_RX = {
     "hmac_sha256": r"[0-9a-f]{32}",
     "floor_hour": r"\d{4}-\d{2}-\d{2} \d{2}:00", "date": r"\d{4}-\d{2}-\d{2}", "iso_week": r"\d{4}-W\d{2}",
     "month": r"\d{4}-\d{2}", "year": r"\d{4}",

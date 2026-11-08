@@ -1,5 +1,3 @@
-// Hardcoded demo data (synthetic, from the TrustED PETs Proving Ground 2026 package, CC BY 4.0 © Since AI ry).
-// Each table is a seeded random sample of 300 rows (row order kept), so time and place vary like the full table.
 import type { SampleInfo } from '@/types/data.types'
 
 export interface Sample extends SampleInfo {

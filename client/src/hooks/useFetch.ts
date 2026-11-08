@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 
-/** Runs an async loader once (or when deps change) and tracks loading / error state. */
 export function useFetch<T>(loader: () => Promise<T>, deps: unknown[] = []) {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState<Error | null>(null)

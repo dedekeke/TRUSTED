@@ -7,9 +7,8 @@ from __future__ import annotations
 
 import re
 
-# ---------------------------------------------------------------- checksums
 
-_HETU_RX = re.compile(r"^(\d{2})(\d{2})(\d{2})([-+A-FU-Y]?)(\d{3})([0-9A-Y])$")  # separator may be stripped
+_HETU_RX = re.compile(r"^(\d{2})(\d{2})(\d{2})([-+A-FU-Y]?)(\d{3})([0-9A-Y])$")
 _HETU_CHECK = "0123456789ABCDEFHJKLMNPRSTUVWXY"
 
 
@@ -51,9 +50,6 @@ def iban_valid(v: str) -> bool:
     return int(num) % 97 == 1
 
 
-# ---------------------------------------------------------------- value regexes
-# Each entry: name -> compiled regex matched against a stripped value (full match).
-
 RX = {
     "EMAIL": re.compile(r"^[\w.+'-]+@[\w-]+(\.[\w-]+)+$"),
     "EMAIL_LIST": re.compile(r"^[\w.+'-]+@[\w-]+(\.[\w-]+)+([;,|]\s*[\w.+'-]+@[\w-]+(\.[\w-]+)+)+$"),
@@ -82,14 +78,12 @@ RX = {
     "COORD": re.compile(r"^-?\d{1,3}\.\d{4,}$"),
     "PERSON_NAME_SHAPE": re.compile(r"^[A-ZÅÄÖÉ][a-zåäöéüA-ZÅÄÖ'-]*[a-zåäöéü]([\s,]+[A-ZÅÄÖÉ][a-zåäöéüA-ZÅÄÖ'-]*[a-zåäöéü]){1,3}$"),
     "SINGLE_CAP_WORD": re.compile(r"^[A-ZÅÄÖÉ][a-zåäöéü'-]+(-[A-ZÅÄÖ][a-zåäöéü]+)?$"),
-    # host names: PREFIX-LETTERS-digits (LT-MIKKAL-4465), SERVER01, or internal FQDNs; not bare PREFIX-digits ids
     "HOSTNAME": re.compile(r"^[A-Z]{2,4}-[A-Z]{3,}(-\d{1,6})?$|^[A-Z]{3,10}\d{2,3}$|"
                            r"^[a-z0-9-]+\.(corp|local|lan|internal|ad)(\.[a-z]+)*$", re.I),
     "PREFIXED_ID": re.compile(r"^[A-Za-z]{1,6}[-_]?\d{3,}([-_]\d+)?$"),
     "LANG_CODE": re.compile(r"^(fi|sv|en|ru|et|ar|so|de|fr|es|fa|ku|uk|vi|zh|th|tr|sq|pl|other)$", re.I),
 }
 
-# Dates and timestamps in the formats real exports use.
 DATE_RXS = [
     re.compile(r"^\d{4}-\d{2}-\d{2}$"),
     re.compile(r"^\d{1,2}\.\d{1,2}\.(\d{2}|\d{4})$"),
@@ -108,7 +102,6 @@ TS_RXS = [
 SEX_VALUES = {"m", "f", "n", "x", "male", "female", "other", "mies", "nainen", "man", "kvinna", "u", "unknown",
               "1", "2"}
 
-# Municipalities of Southwest Finland and neighbouring regions (public geography, Finnish + Swedish names).
 MUNICIPALITIES = {
     "turku", "åbo", "kaarina", "s:t karins", "naantali", "nådendal", "raisio", "reso", "lieto", "lundo", "salo",
     "uusikaupunki", "nystad", "parainen", "pargas", "masku", "nousiainen", "nousis", "mynämäki", "virmo", "rusko",
@@ -129,7 +122,6 @@ COUNTRIES = {"finland", "suomi", "sweden", "ruotsi", "estonia", "germany", "russ
 ORG_SUFFIX = re.compile(r"\b(oy|oyj|ab|ky|tmi|ry|ltd|inc|gmbh|llc|plc|ay|osk|sr|kunta|kaupunki|stad|bank|pankki)\b\.?$",
                         re.I)
 
-# Common first names in Finland (Finnish- and Swedish-speaking), used only as a confidence boost.
 FIRST_NAMES = set("""
 aada aino aleksi anna anne annika antti anu ari arja arto eero eetu eino elias elina ella ellen emilia emma
 erkki esa essi eveliina hanna hannu harri heikki heli helmi henna henrik hilja iida ilkka ilmari inkeri irma
@@ -147,8 +139,6 @@ SURNAME_SUFFIX = re.compile(
     r"(nen|la|lä|mäki|maki|koski|niemi|salo|lahti|vaara|kallio|korpi|aho|oja|järvi|jarvi|joki|harju|"
     r"berg|ström|strom|lund|qvist|kvist|gren|holm|sson|man|ius|ranta|virta|lehto|nurmi|saari|mies)$", re.I)
 
-# ---------------------------------------------------------------- column-name hints
-# (regex on lower-cased column name, role, subtype, weight). Weight < 1: hints only, they never beat value rules.
 
 NAME_HINTS = [
     (r"hetu|ssn|national_?id|personal_?id|henkilotunnus|personbeteckning", "direct_identifier", "NATIONAL_ID", .9),
@@ -193,7 +183,6 @@ NAME_HINTS = [
     (r"domain|(^|_)query$|fqdn", "quasi_identifier", "URL", .6),
 ]
 
-# id-name -> subtype for identifiers
 ID_SUBTYPE_HINTS = [
     (r"customer|client|asiakas", "CUSTOMER_ID"),
     (r"student|learner|pupil", "STUDENT_ID"),

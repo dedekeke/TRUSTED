@@ -19,7 +19,7 @@ const SOURCE_COLOR = { policy: 'default', manual: 'blue', 'k-anonymity': 'orange
 export default function PolicyTable() {
   const { detections, policies, updatePolicy, result } = usePipeline()
   const det = new Map(detections.map((d) => [d.column, d]))
-  // after a run, show the policies actually applied (k-anonymity may have escalated levels)
+
   const rows = result?.policies ?? policies
 
   const columns: ColumnsType<ColumnPolicy> = [

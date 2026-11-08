@@ -1,8 +1,6 @@
-/** Value patterns used by the detector (whole-value match) and by text redaction / residual scan (in-text match). */
-
 export interface ValuePattern {
   key: string
-  /** full-value test */
+
   full: RegExp
 }
 
@@ -36,7 +34,6 @@ export const VALUE_PATTERNS: ValuePattern[] = [
   { key: 'BOOLEAN', full: /^(true|false|0|1|yes|no|kyllä|ei)$/i },
 ]
 
-/** In-text patterns for redaction and the residual-identifier scan (order matters: specific first). */
 export const TEXT_PATTERNS: { label: string; rx: RegExp }[] = [
   { label: 'NATIONAL_ID', rx: new RegExp(String.raw`\b${HETU}\b`, 'g') },
   { label: 'EMAIL', rx: /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g },
@@ -55,7 +52,6 @@ export const TEXT_PATTERNS: { label: string; rx: RegExp }[] = [
 
 const HETU_CHECK = '0123456789ABCDEFHJKLMNPRSTUVWXY'
 
-/** HETU with a valid check character; the century sign may be missing in sloppy exports. */
 export function isHetu(value: string): boolean {
   const m = value
     .trim()
@@ -71,10 +67,9 @@ export function matchFull(value: string): string[] {
   return hits
 }
 
-/** Residual identifier scan, like `pets-eval check` (regex only). */
 export function scanText(text: string, counts: Record<string, number>, examples: Record<string, string[]>) {
   for (const { label, rx } of TEXT_PATTERNS) {
-    if (label === 'ADDRESS') continue // addresses are too fuzzy for a residual scan
+    if (label === 'ADDRESS') continue
     const m = text.match(rx)
     if (!m) continue
     counts[label] = (counts[label] ?? 0) + m.length

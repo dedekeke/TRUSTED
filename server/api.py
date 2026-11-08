@@ -27,7 +27,7 @@ from urllib.parse import parse_qs
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "detect"))  # pets_detect* packages
+sys.path.insert(0, str(Path(__file__).resolve().parent / "detect"))
 
 from pets_eval.io import find_package_root, load_scenarios  # noqa: E402
 
@@ -39,9 +39,9 @@ from server.select import labels as detection_labels  # noqa: E402
 DEV_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173"}
 RUN_ID = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
 LABEL_FIELDS = ["table", "column", "privacy_role", "subtype", "confidence", "needs_review", "art9", "art9_table",
-                "data_kind"]  # `reason` and similar free text are excluded: they may quote cell values
-TRACE_DROP = {"risk"}  # per-evaluation risk dumps are large; share below k is kept per table
-STEP_LOCK = job_runner.RUN_LOCK  # one pipeline step at a time (legacy steps and jobs): CLIs print to the process stdout
+                "data_kind"]
+TRACE_DROP = {"risk"}
+STEP_LOCK = job_runner.RUN_LOCK
 
 
 class ApiError(Exception):
@@ -78,13 +78,11 @@ def _bool(v) -> bool:
 class Api:
     def __init__(self, root, model, runs, detect=None, model_sha256=None):
         self.root, self.model, self.runs = Path(root).resolve(), Path(model), Path(runs)
-        self.model_sha256 = model_sha256  # None: load_model falls back to env DETECT_MODEL_SHA256
+        self.model_sha256 = model_sha256
         self.runs.mkdir(parents=True, exist_ok=True)
         self.detect = detect or self._infer
         bench = self.root / "results" / "benchmark.json"
         self.benchmark = json.loads(bench.read_text()).get("baselines", {}) if bench.is_file() else {}
-        # UI jobs run server.pipeline itself; an injected detector (tests) is passed through, otherwise the
-        # pipeline's own Detect v3 inference runs exactly as on the CLI
         self.jobs = job_runner.Jobs(self.root, self.model, self.runs / "jobs", model_sha256=model_sha256,
                                     detect_fn=detect, benchmark=self.benchmark, scenarios=self.scenarios())
 
@@ -92,7 +90,6 @@ class Api:
         from pets_detect_v3 import deploy
         return deploy.infer(model, data, out, llm=False, model_sha256=self.model_sha256)
 
-    # ------------------------------------------------------------------ helpers
     def datasets(self) -> list[str]:
         return sorted(p.name for p in (self.root / "data").iterdir() if p.is_dir() and artifacts.input_files(p))
 
@@ -142,13 +139,12 @@ class Api:
             except (ValueError, SystemExit) as e:
                 self.log_error(d, name, "rejected", str(e))
                 raise ApiError(400, "rejected", str(e)) from None
-        if not (d / name).exists():  # the CLI returned without output: blocked before writing (message on stderr)
+        if not (d / name).exists():
             msg = err.getvalue().strip() or out.getvalue().strip() or f"{name} produced no output"
             self.log_error(d, name, "blocked", msg)
             raise ApiError(409, "blocked", msg)
         return code
 
-    # ------------------------------------------------------------------ steps
     def create_run(self, body: dict) -> dict:
         dataset = body.get("dataset")
         if dataset not in self.datasets():
@@ -180,7 +176,7 @@ class Api:
         data = self.data_dir(d)
         labels = detection_labels.from_detection(self.labels(d), cli.read_tables(data), data.name)
         try:
-            select.confirm(labels, confirmed, allow)  # same validation select applies (unknown column, downgrade)
+            select.confirm(labels, confirmed, allow)
         except ValueError as e:
             raise ApiError(400, "invalid_confirmation", str(e)) from None
         confirmed.to_csv(self.fresh(d / "confirm.csv", "confirm"), index=False)
@@ -220,12 +216,10 @@ class Api:
         self.fresh(d / "search", "search")
         a = SimpleNamespace(data=str(self.data_dir(d)), plan=str(d / "select" / "decisions.json"),
                             out=str(d / "search"), budget=budget, tau=0.8,
-                            # same as server.pipeline: free text is measured with the Detect spans the export uses
                             detect=str(d / "detect"))
         self.step(d, "search", lambda: cli.cmd_search(a))
         return self.state(run_id)
 
-    # ------------------------------------------------------------------ jobs (UI pipeline)
     @staticmethod
     def validate_confirmation(data: Path, detect_dir: Path, confirmed: pd.DataFrame, allow: bool) -> None:
         """The validation select applies to --confirm (unknown column, protection downgrade)."""
@@ -250,7 +244,6 @@ class Api:
         return {"dataset": ds, "scenario": sc, "baselines": rows,
                 "detection": {"B1": {k: det.get(k) for k in ("macro_f1", "sensitive_recall", "subtype_accuracy")}}}
 
-    # ------------------------------------------------------------------ state
     def state(self, run_id: str) -> dict:
         d = self.run_dir(run_id)
         run = json.loads((d / "run.json").read_text())
@@ -309,7 +302,6 @@ def handler(api: Api):
               ("POST", re.compile(r"^/api/runs/([^/]+)/confirm$"), lambda m, b: api.confirm(m[1], b)),
               ("POST", re.compile(r"^/api/runs/([^/]+)/select$"), lambda m, b: api.select(m[1], b)),
               ("POST", re.compile(r"^/api/runs/([^/]+)/search$"), lambda m, b: api.search(m[1], b)),
-              # UI pipeline jobs (background server.pipeline with per-step status)
               ("GET", re.compile(r"^/api/baselines$"), lambda m, b: api.baselines(b)),
               ("POST", re.compile(r"^/api/jobs$"), lambda m, b: api.jobs.create(b.get("dataset"), b.get("upload"))),
               ("GET", re.compile(r"^/api/jobs/([^/]+)$"), lambda m, b: api.jobs.state(m[1])),

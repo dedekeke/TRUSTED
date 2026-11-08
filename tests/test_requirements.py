@@ -127,7 +127,6 @@ def scenario_with(monkeypatch, tasks):
 
 
 def test_should_require_alternative_whose_drop_makes_task_unanswerable(monkeypatch):
-    # H-U1 shape: "icd10_primary|diagnosis_group" where only the first really works on the task's table
     fn = lambda o, p: {"score": 1.0 if "flag" in p["visits"].columns else None}
     r = scenario_with(monkeypatch, [task(["flag|pid"], fn=fn, id="U1")])
     assert (r["required"], any("not answerable without it" in w for w in r["warnings"])) == (
@@ -204,6 +203,5 @@ def test_should_reject_missing_required_key(tmp_path):
 
 
 def test_should_probe_tables_holding_a_name_outside_the_task_table():
-    # FIN-U6 lives on customers but needs card_pan, which only cards/card_transactions have
     p = parse(["grp", "vid"], table="agg")
     assert (p["required"], p["tables"]) == (["agg.grp"], ["agg", "labs", "visits"])

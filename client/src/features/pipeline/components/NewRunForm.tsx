@@ -37,7 +37,6 @@ function folderName(files: File[]) {
   return rel.includes('/') ? rel.split('/')[0] : ''
 }
 
-/** Choose the data (bundled dataset or browsed CSV files), the sharing scenario and the options, then run. */
 export default function NewRunForm({ onStarted }: { onStarted: (job: Job) => void }) {
   const { data: datasets } = useFetch(backend.datasets)
   const { data: scenarios } = useFetch(api.scenarios)

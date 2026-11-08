@@ -41,7 +41,7 @@ class NameScorer:
         """Returns (name_info, short explanation)."""
         if is_code_like(name):
             return 0.0, f"'{name}' is a code, not a word"
-        _cache = self.__dict__.setdefault("_cache", {})  # per instance: scorers with different vocabularies coexist
+        _cache = self.__dict__.setdefault("_cache", {})
         key = exclude_dataset
         if key not in _cache:
             _cache[key] = self.vocab(exclude_dataset)
@@ -50,15 +50,13 @@ class NameScorer:
         words = [t for t in tk if len(t) >= 3 and re.search(r"[aeiouyåäö]", t)]
         if not words:
             return 0.1, f"'{name}' has no word-like part"
-        # a real word is the main signal: a vocabulary built from ~475 catalog names is too small to require it
-        # (intent, sentiment, csat appear in one dataset only), so it only adds confidence
         cov = sum(t in voc for t in tk) / len(tk)
         hint = 1.0 if any(re.search(rx, name.lower()) for rx, *_ in NAME_HINTS) else 0.0
         code_frac = sum(is_code_like(n) for n in table_names) / len(table_names) if table_names else 0.0
         info = 0.7 + 0.3 * max(cov, hint)
         why = "name is made of words" + (f", {cov:.0%} of tokens seen in other datasets" if cov else "") + \
               (", matches a name hint" if hint else "")
-        if code_frac > .5:  # a lone word among codes is weaker evidence
+        if code_frac > .5:
             info -= 0.2
             why += f", but {code_frac:.0%} of the table's names are codes"
         return round(info, 3), why

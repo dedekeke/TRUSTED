@@ -3,7 +3,6 @@ import { App } from 'antd'
 import { useBlocker } from 'react-router-dom'
 import { jobs } from '@/services/api'
 
-/** While a job runs: warn before refresh, close or in-app navigation; leaving anyway cancels the job. */
 export function useLeaveGuard(id: string, running: boolean) {
   const { modal } = App.useApp()
   const blocker = useBlocker(
@@ -19,7 +18,7 @@ export function useLeaveGuard(id: string, running: boolean) {
       okButtonProps: { danger: true },
       cancelText: 'Stay',
       onOk: async () => {
-        await jobs.cancel(id).catch(() => undefined) // leave even if the server is unreachable
+        await jobs.cancel(id).catch(() => undefined)
         blocker.proceed()
       },
       onCancel: () => blocker.reset(),
@@ -28,7 +27,7 @@ export function useLeaveGuard(id: string, running: boolean) {
 
   useEffect(() => {
     if (!running) return
-    // browsers show their own "changes may not be saved" text; pagehide only fires if the user chose to leave
+
     const warn = (e: BeforeUnloadEvent) => e.preventDefault()
     const stop = () => void jobs.cancel(id, true).catch(() => undefined)
     window.addEventListener('beforeunload', warn)

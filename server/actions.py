@@ -30,13 +30,12 @@ from pets_eval.utility.health import diagnosis_group
 from server.select.detect import normalise_hetu, safe_datetime
 
 TIME_FORMATS = {"floor_hour": "%Y-%m-%d %H:00", "date": "%Y-%m-%d", "iso_week": "%G-W%V", "month": "%Y-%m", "year": "%Y"}
-HOUR_ANCHORS = {  # hour of day kept, date replaced by an anchor of the stated period
+HOUR_ANCHORS = {
     "week_hour": "Monday of the ISO week + HH:00",
     "month_hour": "first day of the month + HH:00",
     "year_hour": "1 January of the year + HH:00",
 }
 DATE_RX = re.compile(r"\b\d{1,2}[./]\d{1,2}[./](\d{4}|\d{2})\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\.\d{1,2}\.(?!\d)")
-# street + house number (+ staircase/flat), e.g. "Kangaspolku 6 A 1": capitalised word with a street suffix
 ADDRESS_RX = re.compile(r"\b[A-ZÅÄÖ][a-zåäö]*(?:tie|katu|kuja|polku|rinne|väylä|kaari|mäki|ranta|puisto|piha|tori|"
                         r"vägen|gatan|gränd|stigen|aukio|kallio|niitty|ahde|harju|linja|laakso|kulma)\s\d+[a-z]?"
                         r"(?:\s?[A-Z]\s?\d+)?(?:,?\s\d{5}(?:\s[A-ZÅÄÖ][a-zåäö]+)?)?")
@@ -49,7 +48,6 @@ SPAN_LABEL = {"NATIONAL_ID": "NATIONAL_ID", "IBAN": "IBAN", "PAYMENT_CARD": "PAY
 ROW_VALUE_LABELS = {"PERSON_NAME": "PERSON", "PHONE": "PHONE", "EMAIL": "EMAIL", "STREET_ADDRESS": "ADDRESS",
                     "NATIONAL_ID": "NATIONAL_ID"}
 PLACEHOLDER_RX = re.compile(r"[A-Z][A-Z0-9_]{0,31}")
-# Every (action, method) pair the executor implements; Transform refuses anything else before writing.
 SUPPORTED = {("KEEP", None), ("DROP", None), ("HMAC", "hmac_sha256"), ("HMAC", "ipv4_prefix"),
              ("REDACT", "redact_spans")} | {("GENERALISE", m) for m in (
                  *TIME_FORMATS, *HOUR_ANCHORS, "age_band", "postcode_prefix", "suppress_rare", "merge_rare",
@@ -62,7 +60,7 @@ def blank(s: pd.Series) -> pd.Series:
     return s.isna() | (s.astype(str).str.strip() == "")
 
 
-_blank = blank  # name used by older imports
+_blank = blank
 
 
 def normaliser(subtype: str):
@@ -84,7 +82,7 @@ def hmac_token(values: pd.Series, key: bytes, context: str, subtype: str = "") -
 def _time(s: pd.Series, method: str) -> pd.Series:
     dt = safe_datetime(s.where(~blank(s)))
     if method == "floor_hour":
-        dt = dt.dt.floor("h")  # floor, never round: rounding shifts the hour curve and late rows to the next day
+        dt = dt.dt.floor("h")
     return dt.dt.strftime(TIME_FORMATS[method]).where(dt.notna(), "")
 
 
@@ -125,7 +123,7 @@ def redact(text: str, row_values: dict | None = None) -> str:
                         text = re.sub(rf"\b{re.escape(part)}\b", "[PERSON]", text, flags=re.I)
     text = ADDRESS_RX.sub("[ADDRESS]", text)
     for name, rx in PATTERNS.items():
-        ok = None if name == "NATIONAL_ID" else VALIDATORS.get(name)  # over-redact ID-shaped strings
+        ok = None if name == "NATIONAL_ID" else VALIDATORS.get(name)
         text = rx.sub(lambda m: m.group(0) if ok and not ok(m.group(1)) else f"[{SPAN_LABEL[name]}]", text)
     text = DATE_RX.sub("[DATE]", text)
     return NAME_PAIR_RX.sub("[PERSON]", text)
@@ -202,7 +200,7 @@ def apply_column(s: pd.Series, d: dict, key: bytes, release_id: str, df: pd.Data
         out = Pz.to_age_band(x.where(x >= 0), width=p.get("width", 10), top=p.get("top", 80)).fillna("")
     elif method == "postcode_prefix":
         code = s.astype(str).str.strip()
-        out = code.str[: p["digits"]].where(code.str.fullmatch(r"\d{5}"), "")  # only valid 5-digit codes
+        out = code.str[: p["digits"]].where(code.str.fullmatch(r"\d{5}"), "")
     elif method == "suppress_rare":
         out = _rare(s, p["min_count"], "")
     elif method == "merge_rare":
@@ -225,7 +223,7 @@ def apply_column(s: pd.Series, d: dict, key: bytes, release_id: str, df: pd.Data
         out = s.astype(str).map(url_host)
     elif method == "registrable_domain":
         out = s.astype(str).map(lambda v: registrable_domain(url_host(v)))
-    elif method == "ipv4_prefix":  # generalise to the /24 network
+    elif method == "ipv4_prefix":
         ip = s.astype(str).str.strip()
         out = ip.str.replace(r"\.\d{1,3}$", ".0", regex=True).where(ip.map(lambda v: ip_ok(v) and v.count(".") == 3), "")
     else:
@@ -234,7 +232,6 @@ def apply_column(s: pd.Series, d: dict, key: bytes, release_id: str, df: pd.Data
     return out.astype(str).where(~blank(out), ""), lost
 
 
-# second-level public suffixes common enough to matter; anything else keeps its last two labels
 _TWO_LEVEL = {"co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "org.au", "co.jp", "co.nz", "com.br",
               "com.cn", "com.tr", "co.za", "com.mx"}
 _HOST_RX = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)*$")
@@ -273,7 +270,7 @@ def derive_age_band(df: pd.DataFrame, birth: str, event: str, width: int = 10, t
     return Pz.to_age_band(age_years(df, birth, event, ref_date), width=width, top=top).fillna("")
 
 
-UNKNOWN_SUBJECT = "\x00unknown-subject"  # one stand-in person for all unresolved rows of a QI class
+UNKNOWN_SUBJECT = "\x00unknown-subject"
 
 
 def with_unknown(subjects: pd.Series) -> pd.Series:
@@ -338,7 +335,7 @@ def execute(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, spans: dict
             continue
         src = tables[t]
         res = {}
-        for dv in (x for x in plan.get("derived", []) if x["table"] == t):  # from the original dates, first
+        for dv in (x for x in plan.get("derived", []) if x["table"] == t):
             if dv["method"] not in DERIVATIONS:
                 raise ValueError(f"unsupported derivation {dv['method']}")
             if dv["column"] in src.columns or dv["column"] in res:
@@ -375,7 +372,7 @@ def execute(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, spans: dict
             n = int(rows.sum())
             if n:
                 stats["suppressed_cells"][t] = int((~blank(df.loc[rows, rule["qis"]].stack())).sum())
-                df.loc[rows, rule["qis"]] = ""  # blank the QIs; the rows stay
+                df.loc[rows, rule["qis"]] = ""
             stats["suppressed_rows"][t] = n
         out[t] = df.reset_index(drop=True)
         stats["rows"][t] = len(out[t])

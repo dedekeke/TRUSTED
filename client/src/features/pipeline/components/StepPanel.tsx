@@ -41,7 +41,6 @@ function RawLog({ jobId, step }: { jobId: string; step: JobStep['name'] }) {
   )
 }
 
-/** The content of one expanded step: issues, stat tiles, tables, and the raw log. */
 export default function StepPanel({ job, step, onJob }: { job: Job; step: JobStep; onJob: (j: Job) => void }) {
   const [view, setView] = useState<StepView | null>(null)
   const [error, setError] = useState<ApiError | null>(null)

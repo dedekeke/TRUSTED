@@ -77,7 +77,7 @@ def _person_tables(labels: dict, relations: dict) -> set:
     """Tables about people: own person evidence, or joined to such a table (person context crosses joins)."""
     direct = {_split(ref)[0] for ref, lab in labels.items()
               if "person table" in str(lab.get("evidence", "")) or lab["privacy_role"] == "direct_identifier"}
-    direct |= set(relations.get("subject_keys") or {})  # subject may be reached through a join
+    direct |= set(relations.get("subject_keys") or {})
     linked, changed = set(direct), True
     while changed:
         changed = False
@@ -143,41 +143,37 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
     columns = {t: list(df.columns) for t, df in tables.items()}
     exists = {_ref(t, c) for t, cs in columns.items() for c in cs}
 
-    # 1. requirements -> required refs (missing ones block)
     required = {r: list(ts) for r, ts in (requirements.get("required") or {}).items()}
     for r, ts in required.items():
         if r not in exists:
             errors.append(f"{r} is required by {', '.join(ts)} but missing from the input")
     for group in requirements.get("any_of") or []:
-        options = [list(alt) if isinstance(alt, (list, tuple)) else alt.split("+") for alt in group]  # nested or "a+b"
+        options = [list(alt) if isinstance(alt, (list, tuple)) else alt.split("+") for alt in group]
         usable = [o for o in options if all(p in exists for p in o)]
         if not usable:
             errors.append(f"none of the alternatives {' | '.join('+'.join(o) for o in options)} is available")
             continue
-        for p in usable[0]:  # minimisation: keep only the first usable alternative
+        for p in usable[0]:
             required.setdefault(p, []).append("any_of:" + "|".join("+".join(o) for o in options))
     precision = requirements.get("precision") or {}
 
-    # 2. joins -> shared token domains
     doms, join_refs = _Domains(), set()
     errors += [f"relations: {x}" for x in relations.get("conflicts", [])]
     warnings += [f"relations: {x}" for x in relations.get("notices", [])]
     trusted = [j for j in relations.get("joins", []) if j.get("coverage", 1.0) >= MIN_JOIN_COVERAGE]
     relations = {**relations, "joins": trusted}
-    linked = _Domains()  # columns connected by trusted joins, transitively (child -> parent <- child)
+    linked = _Domains()
     for j in trusted:
         linked.union(j["parent"], j["child"])
-    # a requirement join groups 2+ columns (the same name in several tables, e.g. student_id in 3 tables);
-    # each pair must be connected by trusted joins, directly or through a shared parent
     pairs = [(j, a, b) for j in requirements.get("joins") or [] for a, b in combinations(j["columns"], 2)]
     for j, a, b in pairs:
         if linked.find(a) != linked.find(b):
             ids = all(lab.get(x, {}).get("privacy_role") in ID_ROLES for x in (a, b))
-            if j.get("kind", "declared") == "same_name" and ids:  # the analysis needs a join the data doesn't support
+            if j.get("kind", "declared") == "same_name" and ids:
                 errors.append(f"{a} = {b} is needed by {', '.join(j.get('tasks', []))} but relations found no join "
                               f"with coverage >= {MIN_JOIN_COVERAGE}")
                 continue
-            if j.get("kind", "declared") == "same_name":  # an unconfirmed name match must not widen a token domain
+            if j.get("kind", "declared") == "same_name":
                 warnings.append(f"{a} = {b} share a name in {', '.join(j.get('tasks', []))} but relations found no "
                                 "join; not treated as a join")
                 continue
@@ -186,21 +182,19 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
         doms.union(a, b)
         join_refs |= {a, b}
 
-    for t, cs in columns.items():  # e.g. from_iban/to_iban: the same account must get the same token
+    for t, cs in columns.items():
         ids = [_ref(t, c) for c in cs if _ref(t, c) in required and lab.get(_ref(t, c), {}).get("privacy_role") in ID_ROLES]
         for i, a in enumerate(ids):
             for b in ids[i + 1:]:
                 if lab[a]["subtype"] == lab[b]["subtype"] and set(required[a]) & set(required[b]):
                     doms.union(a, b)
 
-    # 3. person context crosses joins: place/time in a table linked to people is a quasi-identifier
     people = _person_tables(lab, relations)
     for ref, l in lab.items():
         if _split(ref)[0] in people and l["privacy_role"] == "non_sensitive" and l["subtype"] in CONTEXT_QI | {"URL"}:
             lab[ref] = {**l, "privacy_role": "quasi_identifier",
                         "evidence": f"{l.get('evidence', '')}; linked to people through a join"}
 
-    # 4. table release scope
     no_purpose = requirements.get("source") == "none"
     used_tables = {_split(r)[0] for r in required} | {_split(r)[0] for r in join_refs}
     plan_tables, plan_cols, derived = {}, [], []
@@ -218,7 +212,6 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
             plan_tables[t] = {"action": "WITHHOLD", "record_key": None,
                               "reason": "no declared analysis needs this table"}
 
-    # 5. one decision per source column of each released table
     for t, td in plan_tables.items():
         if td["action"] != "RELEASE":
             continue
@@ -284,8 +277,6 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
                 d = {"table": t, "column": name, "sources": [c, events[0]], "method": chosen["method"],
                      "params": dict(chosen["params"]), "rungs": rungs, "required_by": required.get(ref, []),
                      "reason": f"age at {events[0]} from {c}, before both are generalised or dropped"}
-                # A profile table (FIN customers) has no analysed event date: age at the end of the analysed period
-                # instead of an unrelated date such as account_open_date.
                 end = None if _ref(t, events[0]) in required else _period_end(tables, lab, required)
                 if end:
                     d.update(ref_date=end,reason=f"age at {end} (end of the analysed period) from {c}")
@@ -294,7 +285,7 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
                              reason=entry["reason"] + f"; dropped after deriving {name}")
             plan_cols.append(entry)
 
-    for t, td in plan_tables.items():  # a released table with nothing left to release is withheld
+    for t, td in plan_tables.items():
         if td["action"] == "RELEASE" and not any(c["table"] == t and c["action"] != "DROP" for c in plan_cols) \
                 and not any(d["table"] == t for d in derived):
             plan_tables[t] = {"action": "WITHHOLD", "record_key": None, "reason": "no column is releasable"}
@@ -304,7 +295,7 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
     for c in plan_cols:
         if c["action"] == "HMAC" and c["params"].get("domain"):
             domains.setdefault(c["params"]["domain"], []).append(_ref(c["table"], c["column"]))
-    for d, refs in domains.items():  # join partners must share a domain
+    for d, refs in domains.items():
         for a in refs:
             if a in join_refs and any(doms.find(b) == doms.find(a) and b not in refs for b in join_refs):
                 errors.append(f"{a}: join partner not tokenised in the same domain")

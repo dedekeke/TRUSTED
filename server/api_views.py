@@ -16,7 +16,6 @@ from pathlib import Path
 import pandas as pd
 
 LABEL_FIELDS = ["table", "column", "privacy_role", "subtype", "confidence", "needs_review", "art9", "data_kind"]
-# Detect v3 quality from its leave-one-dataset-out evaluation (server/detect README; offline, not this run)
 DETECT_V3_EVAL = {"macro_f1_names": 0.854, "macro_f1_blind": 0.774, "span_f2": 0.998}
 ISSUE_CODE = re.compile(r"^([a-z_]+):\s")
 REVIEW_RX = re.compile(r"review_required: (\S+) is required by (.+?) but its label (\S+) is uncertain "
@@ -50,8 +49,6 @@ def issues_from(messages: list, level: str) -> list[dict]:
         out.append({"level": level, "code": code.group(1) if code else level, "message": m})
     return out
 
-
-# ---------------------------------------------------------------- per-step views
 
 def view_input(job: Path, ctx: dict) -> dict:
     info = _json(job / "input.json") or {"tables": []}
@@ -110,7 +107,7 @@ def view_detect(job: Path, ctx: dict) -> dict:
             table("quality", "Detector quality vs baseline", [
                 ("detector", "Detector"), ("macro_f1_names", "Macro-F1 (with names)"),
                 ("macro_f1_blind", "Macro-F1 (names hidden)"), ("sensitive_recall", "Sensitive recall")], quality,
-                note="Offline leave-one-dataset-out evaluation on the 9 labelled datasets (server/detect README); "
+                note="Offline leave-one-dataset-out evaluation on the 9 labelled datasets (README, Detect results); "
                      "not measured on this run."),
         ],
         "issues": []}
@@ -311,8 +308,6 @@ def view_evaluate(job: Path, ctx: dict) -> dict:
     ours = summarise_scorecard(rep)
     ds, sc = ctx.get("dataset"), ctx.get("scenario")
     bench = ctx.get("benchmark", {})
-    # our scorecard runs with the scenario, so its utility covers the scenario's tasks only: it is compared in the
-    # scenario column, never against the baselines' all-task utility
     rows = [{"method": "Ours (this pipeline)", **{k: _r(ours[k]) for k in ("privacy", "composite",
                                                                           "worst_reid", "residual_identifiers")},
              "utility": None, "scenario_utility": _r(ours["utility"])}]

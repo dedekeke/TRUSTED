@@ -9,7 +9,6 @@ export interface UploadedScorecard {
   scorecard: Scorecard
 }
 
-/** Scorecards dropped in by the team (pets-eval scorecard.json); remembered in this browser only. */
 export function useUploadedScorecards() {
   const [items, setItems] = useState<UploadedScorecard[]>(() => {
     try {

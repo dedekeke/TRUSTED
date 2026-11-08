@@ -36,5 +36,4 @@ export interface Scorecard {
   >
 }
 
-/** dataset -> baseline label (B0, B2, B2-k, Quickstart) -> scorecard */
 export type Benchmark = Record<string, Record<string, Scorecard>>

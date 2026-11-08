@@ -4,7 +4,6 @@ import type { Job } from '@/types/job.types'
 
 const POLL_MS = 1500
 
-/** Poll a job while it runs; stop once it succeeds, fails or waits for a review. refresh() restarts polling. */
 export function useJob(id: string | undefined) {
   const [job, setJob] = useState<Job | null>(null)
   const [error, setError] = useState<ApiError | null>(null)
@@ -24,7 +23,7 @@ export function useJob(id: string | undefined) {
       } catch (e) {
         if (!alive) return
         setError(e instanceof ApiError ? e : new ApiError('network', String(e)))
-        timer = setTimeout(poll, POLL_MS * 4) // the server may be restarting: keep trying, slower
+        timer = setTimeout(poll, POLL_MS * 4)
       }
     }
     poll()

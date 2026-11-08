@@ -209,7 +209,6 @@ def main(root=None, base: str = "", max_train: int = 6000, n_dev: int = 1500, n_
         summary["datasets"].setdefault(f["dataset"], []).append(f["key"])
         print(f"  {f['key']:55s} F2 B2 {sb['micro']['f2']:.3f} -> v2 {sv['micro']['f2']:.3f}  "
               f"recall {sb['micro']['recall']:.3f} -> {sv['micro']['recall']:.3f}", flush=True)
-        # full test predictions (contain raw values: out/ is git-ignored)
         with (OUT / f"pred_test_{f['key']}.jsonl").open("w") as fh:
             for x in recs:
                 fh.write(json.dumps({"record_id": x["id"], "spans": [
@@ -221,7 +220,6 @@ def main(root=None, base: str = "", max_train: int = 6000, n_dev: int = 1500, n_
                                for name, p in all_pred.items()}
     summary["thresholds"] = {"with_dict": tagger.o_threshold, "no_dict": tagger_nodict.o_threshold}
 
-    # eval split (no public labels): organisers' hidden check
     sub = OUT / "pets_submission"
     sub.mkdir(exist_ok=True)
     for f in files:

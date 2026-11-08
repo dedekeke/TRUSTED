@@ -12,7 +12,7 @@ export type PrivacyRole =
 export interface Dataset {
   id: string
   name: string
-  /** proving-ground dataset / table, when the data comes from the package */
+
   dataset?: string
   table?: string
   columns: string[]
@@ -27,7 +27,7 @@ export interface ColumnStats {
   avgLength: number
   numericShare: number
   examples: string[]
-  /** share of non-empty values matching each value pattern */
+
   patternShares: Record<string, number>
 }
 
@@ -61,7 +61,7 @@ export type PetId =
 export interface ColumnPolicy {
   column: string
   pet: PetId
-  /** generalisation level on the PET's ladder (0 = finest) */
+
   level: number
   rationale: string
   source: 'policy' | 'manual' | 'k-anonymity'
@@ -95,6 +95,6 @@ export interface ProtectedResult {
   log: TransformLogEntry[]
   suppressedCells: number
   kTarget: number | null
-  /** quasi-identifiers k-anonymity was enforced on */
+
   kQis: string[]
 }

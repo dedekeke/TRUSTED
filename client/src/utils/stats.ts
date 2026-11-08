@@ -36,7 +36,6 @@ export function valueCounts(values: string[]): Map<string, number> {
   return m
 }
 
-/** total variation distance between two categorical distributions (0 = identical, 1 = disjoint) */
 export function tvd(a: string[], b: string[]): number {
   const ca = valueCounts(a)
   const cb = valueCounts(b)

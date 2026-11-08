@@ -1,5 +1,3 @@
-/** Shapes returned by server/api.py /api/jobs (labels, counts, statuses and digests only; never cell values). */
-
 export type StepName = 'input' | 'detect' | 'review' | 'select' | 'search' | 'transform' | 'evaluate'
 
 export type StepStatus = 'queued' | 'running' | 'success' | 'failed' | 'needs_review' | 'warning' | 'skipped'

@@ -1,5 +1,3 @@
-/** Lenient date parsing for the mixed formats found in real exports (ISO, d.m.yyyy, dd/mm/yy, Finnish HETU). */
-
 export function parseDate(value: string): Date | null {
   const v = value.trim()
   if (!v) return null
@@ -14,7 +12,6 @@ export function parseDate(value: string): Date | null {
   return null
 }
 
-/** Birth date encoded in a Finnish personal identity code (HETU). */
 export function birthDateFromHetu(hetu: string): Date | null {
   const m = hetu.trim().match(/^(\d{2})(\d{2})(\d{2})([-+A-FU-Y])/)
   if (!m) return null
@@ -39,7 +36,6 @@ export function isoWeek(d: Date): string {
   return `${t.getUTCFullYear()}-W${pad(week)}`
 }
 
-/** level 0 hour, 1 day, 2 ISO week, 3 month — formats understood by pets-eval */
 export function roundTime(d: Date, level: number): string {
   const y = d.getUTCFullYear()
   const mo = pad(d.getUTCMonth() + 1)

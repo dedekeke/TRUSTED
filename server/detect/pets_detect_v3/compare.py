@@ -20,11 +20,9 @@ SAVED = Path("out/compare")
 OUT = Path("out/compare_v3")
 REPORTS = Path("out/reports_v3")
 
-# final configuration, set from the ablation (see notes); LLM steps B1-B4 switched on
-# ablation (out/compare_v3/ablation*.csv): B1 and B2 kept; B3 and B4 dropped because they lowered macro-F1 with names
 FINAL = Config(router="A1", margin_names=.10, margin_values=.10, margin_art9=0.0, b2_honest_conf=True,
                b3_art9_llm=False)
-STEP4 = Config(router="A1", margin_names=.10, margin_values=.10)          # + B1 only (new prompt)
+STEP4 = Config(router="A1", margin_names=.10, margin_values=.10)
 
 
 def _score(pred, catalog, datasets):
@@ -70,7 +68,6 @@ def run(root=None, llm: bool = True, cfg: Config = FINAL, tag: str = "v3") -> di
         o = info["overall"]
         print(f"[{tag} {view}] macro-F1 {o['macro_f1']:.3f}  sensitive recall {o['sensitive_recall']:.3f}  "
               f"LLM calls {info['llm_calls']}", flush=True)
-    # mixed view: router check only (no LLM), against the two single-source routers
     res["mixed"] = {}
     for name, router in (("always kNN (names)", "knn"), ("always LogReg (values)", "logreg"),
                          (f"v3 router ({cfg.router})", cfg.router)):

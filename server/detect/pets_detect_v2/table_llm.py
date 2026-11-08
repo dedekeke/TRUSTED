@@ -58,7 +58,7 @@ COLUMN_SCHEMA = {
 def column_card(i: int, p: dict, guess: tuple[str, str, float] | None, show_names: bool) -> dict:
     card = {
         "id": i + 1,
-        "name": p["column"],  # in name-blind mode the profile is already renamed to cNN
+        "name": p["column"],
         "shapes": p["shapes"][:3],
         "samples": [str(v)[:40] for v in p["samples"][:4]],
         "unique_ratio": p["unique_ratio"], "n_unique": p["n_unique"], "null_frac": p["null_frac"],
@@ -163,7 +163,6 @@ class TableLLM:
         (A single call that labels many columns at once made a 7B model mix columns up.)"""
         if not ask or not self.available():
             return "", {}
-        # unsure columns get no current guess: otherwise a small model just rubber-stamps it
         cards = [column_card(i, p, None if i in ask else g, show_names) for i, (p, g) in enumerate(zip(ps, guesses))]
         d = self._ask(domain_prompt(table, cards, context), DOMAIN_SCHEMA) or {}
         domain = str(d.get("table_domain", ""))[:200]

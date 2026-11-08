@@ -22,17 +22,17 @@ import pandas as pd
 from pets_eval.check import hetu_ok, iban_ok, luhn_ok
 from pets_eval.parse import to_datetime
 
-SAMPLE = 2000  # values tested per column
-REVIEW_BELOW = 0.6  # confidence below this goes to human review
+SAMPLE = 2000
+REVIEW_BELOW = 0.6
 COLUMNS = ["dataset", "table", "column", "privacy_role", "subtype", "confidence", "evidence"]
 
 DIRECT = {"NATIONAL_ID", "EMAIL", "PHONE", "IBAN", "PAYMENT_CARD", "LICENSE_PLATE", "PERSON_NAME", "USERNAME"}
 TECHNICAL = {"IP_ADDRESS", "MAC_ADDRESS", "HOSTNAME", "USER_AGENT", "DEVICE_ID", "METER_ID", "CARD_ID"}
-PERSON_QI = {"BIRTH_DATE", "AGE", "SEX"}  # quasi-identifiers wherever they appear
+PERSON_QI = {"BIRTH_DATE", "AGE", "SEX"}
 CONTEXT_QI = {"POSTCODE", "MUNICIPALITY", "GPS_COORDINATE", "TIMESTAMP", "DATE", "LOCATION_NAME", "LANGUAGE",
-              "STREET_ADDRESS", "OCCUPATION", "ORG_NAME"}  # quasi-identifiers only in tables about people
+              "STREET_ADDRESS", "OCCUPATION", "ORG_NAME"}
 PERSON_IDS = {"CUSTOMER_ID", "PATIENT_ID", "STUDENT_ID", "EMPLOYEE_ID", "ACCOUNT_ID", "CARD_ID"}
-PERSONAL_DEVICES = {"MAC_ADDRESS", "DEVICE_ID"}  # a phone or card in a log is a person's trace
+PERSONAL_DEVICES = {"MAC_ADDRESS", "DEVICE_ID"}
 ENTITY_IDS = {"CUSTOMER_ID", "PATIENT_ID", "STUDENT_ID", "EMPLOYEE_ID", "ACCOUNT_ID", "CARD_ID", "DEVICE_ID",
               "METER_ID", "PROPERTY_ID"}
 
@@ -40,7 +40,6 @@ SEX_VALUES = {"m", "f", "male", "female", "mies", "nainen", "man", "woman", "n",
               "kvinna", "unknown", "u", "1", "2"}
 LANG_VALUES = {"fi", "sv", "en", "ru", "et", "so", "ar", "fa", "ku", "de", "fr", "es", "zh", "uk", "vi", "th",
                "finnish", "swedish", "english", "russian", "estonian", "suomi", "ruotsi", "svenska", "other", "muu"}
-# Finnish municipalities (public reference list subset: largest cities + Southwest Finland region).
 MUNICIPALITIES = {m.lower() for m in """Helsinki Espoo Tampere Vantaa Oulu Turku Jyväskylä Kuopio Lahti Pori Kouvola
     Joensuu Lappeenranta Hämeenlinna Vaasa Seinäjoki Rovaniemi Mikkeli Kotka Salo Porvoo Kokkola Hyvinkää Lohja
     Järvenpää Rauma Kirkkonummi Tuusula Kajaani Kerava Nokia Kangasala Ylöjärvi Vihti Raasepori Savonlinna Riihimäki
@@ -48,7 +47,7 @@ MUNICIPALITIES = {m.lower() for m in """Helsinki Espoo Tampere Vantaa Oulu Turku
     Somero Kemiönsaari Aura Pöytyä Marttila Koski Oripää Taivassalo Kustavi Pyhäranta Vehmaa Kemi Tornio Imatra
     Iisalmi Varkaus Forssa Valkeakoski Akaa Sastamala Pirkkala Lempäälä Mariehamn Maarianhamina""".split()}
 
-NAME_HINTS = [  # (regex on column name, subtype); weak evidence only
+NAME_HINTS = [
     (r"hetu|ssn|national|personal_?id|henkilotunnus", "NATIONAL_ID"),
     (r"e_?mail", "EMAIL"), (r"phone|mobile|puhelin|gsm", "PHONE"), (r"iban|bank_?account", "IBAN"),
     (r"(^|_)pan$|card_?number|card_pan", "PAYMENT_CARD"), (r"plate|rekisteri", "LICENSE_PLATE"),
@@ -76,7 +75,7 @@ R = {
     "NATIONAL_ID": re.compile(r"^\d{6}[-+A-FU-Y]\d{3}[0-9A-Y]$"),
     "EMAIL": re.compile(r"^[\w.+-]+@[\w-]+(\.[\w-]+)+$"),
     "IBAN": re.compile(r"^[A-Z]{2}\d{2}[ A-Z0-9]{11,32}$"),
-    "PHONE": re.compile(r"^(\+\d{3}|00[1-9]\d{2}|0[1-9])\d{5,10}$"),  # after stripping separators
+    "PHONE": re.compile(r"^(\+\d{3}|00[1-9]\d{2}|0[1-9])\d{5,10}$"),
     "MAC_ADDRESS": re.compile(r"^([0-9A-F]{2}[:-]){5}[0-9A-F]{2}$", re.I),
     "URL": re.compile(r"^(https?://|www\.)\S+$", re.I),
     "USER_AGENT": re.compile(r"^(Mozilla/|curl/|python-requests|Wget/|okhttp)", re.I),
@@ -98,7 +97,7 @@ R = {
 
 def safe_datetime(vals: pd.Series) -> pd.Series:
     """pets_eval.parse.to_datetime, tz-naive; values it cannot handle (e.g. '2022-23', mixed offsets) become NaT."""
-    def naive(ts):  # keep local wall-clock time; mixed offsets cannot share one tz-aware dtype
+    def naive(ts):
         return ts.tz_localize(None) if getattr(ts, "tzinfo", None) is not None else ts
 
     try:
@@ -259,7 +258,6 @@ def classify_column(col: str, s: pd.Series, table: str = "") -> dict:
         if own_key:
             conf, ev = .85, ev + "; key of its own table"
     elif nsub and nsub != vsub and vconf < .8:
-        # weak value evidence: let a specific name hint win, but stay below auto-accept confidence
         generic = vsub in (None, "CATEGORY", "MEASUREMENT", "FREE_TEXT") or vconf < .5
         if generic and not (nsub == "FREE_TEXT" and p["distinct"] < 50):
             sub, conf, ev = nsub, .55, f"column name suggests {nsub}; values: {ev}"
@@ -305,8 +303,6 @@ def detect_table(df: pd.DataFrame, table: str, dataset: str = "") -> pd.DataFram
     """Labels for every column of one table, in taxonomy vocabulary plus confidence and evidence."""
     cols = [classify_column(c, df[c], table) for c in df.columns]
     subs = {c["subtype"] for c in cols}
-    # a table is about people only on value evidence of personal identifiers or person attributes, or an
-    # identifier the column name ties to a person; name-only guesses and generic repeating ids don't count
     person_table = any((c["from_values"] and c["confidence"] >= REVIEW_BELOW and c["subtype"] in DIRECT)
                        or (c["from_values"] and c["confidence"] >= .8 and c["subtype"] in PERSON_QI | PERSONAL_DEVICES)
                        or (c["subtype"] in PERSON_IDS and c["confidence"] >= REVIEW_BELOW) for c in cols)

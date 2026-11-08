@@ -55,7 +55,7 @@ def test_bundled_dataset_runs_all_steps_green_and_serves_tables_without_values(s
     assert steps(st) == {"input": "success", "detect": "success", "review": "success", "select": "success",
                          "search": "success", "transform": "success", "evaluate": "skipped"}
     assert all(s["duration_s"] is not None for s in st["steps"] if s["status"] == "success" and s["name"] != "review")
-    assert next(s for s in st["steps"] if s["name"] == "review")["duration_s"] is None  # a human gate, not a runtime
+    assert next(s for s in st["steps"] if s["name"] == "review")["duration_s"] is None
     texts = [call(server, f"/api/jobs/{jid}")[2]]
     for name in ("input", "detect", "review", "select", "search", "transform", "evaluate"):
         status, view, text, _ = call(server, f"/api/jobs/{jid}/steps/{name}")
@@ -69,7 +69,7 @@ def test_bundled_dataset_runs_all_steps_green_and_serves_tables_without_values(s
 
 
 def test_review_pauses_then_confirm_resumes_into_new_dirs(server, root):  # noqa: F811
-    spec = {**SPEC_OK, "required": [{"column": "people.score", "task": "T-SCORE"}]}  # score: detector needs_review
+    spec = {**SPEC_OK, "required": [{"column": "people.score", "task": "T-SCORE"}]}
     jid = call(server, "/api/jobs", {"dataset": "demo"})[1]["id"]
     call(server, f"/api/jobs/{jid}/start", {"spec": spec, "no_scorecard": True})
     st = wait(server, jid)
@@ -168,7 +168,7 @@ def test_uploaded_data_with_a_bundled_scenario_finds_the_package(outside_server,
     call(outside_server, f"/api/jobs/{jid}/start", {"scenario": "DEMO-S1", "no_scorecard": True})
     st = wait(outside_server, jid)
     assert steps(st)["select"] == "success", st
-    assert "PETS_ROOT" not in __import__("os").environ          # restored after the job
+    assert "PETS_ROOT" not in __import__("os").environ
 
 
 def test_select_rejection_is_reported_with_its_reason(outside_server, root, monkeypatch):  # noqa: F811
@@ -197,12 +197,12 @@ def test_cancel_stops_before_the_next_stage(root):  # noqa: F811
         jid = call(base, "/api/jobs", {"dataset": "demo"})[1]["id"]
         call(base, f"/api/jobs/{jid}/start", {"spec": SPEC_OK, "no_scorecard": True})
         assert started.wait(10)
-        assert call(base, f"/api/jobs/{jid}/cancel", {})[1]["state"] == "running"  # detect still finishes
+        assert call(base, f"/api/jobs/{jid}/cancel", {})[1]["state"] == "running"
         release.set()
         st = wait(base, jid)
         assert st["state"] == "cancelled", st
         assert steps(st)["detect"] == "success" and steps(st)["select"] == "skipped"
-        assert call(base, f"/api/jobs/{jid}/cancel", {})[1]["state"] == "cancelled"  # idempotent once stopped
+        assert call(base, f"/api/jobs/{jid}/cancel", {})[1]["state"] == "cancelled"
     finally:
         release.set()
         httpd.shutdown()

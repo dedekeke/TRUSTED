@@ -36,16 +36,16 @@ OUT_COLS = ["dataset", "table", "column", "privacy_role", "subtype", "confidence
 @dataclass
 class Config:
     tiers: tuple = (1, 2, 3)
-    view: str = "names"            # names | blind | mixed
-    router: str = "A2"             # knn | logreg | A1 | A2
+    view: str = "names"
+    router: str = "A2"
     rule_accept: float = 0.85
     llm_below: float = 0.65
-    margin_names: float = 0.03     # recall-bias margin when the name is fully informative
-    margin_values: float = 0.10    # ... when the name says nothing (v2 default)
-    margin_art9: float = 0.0       # B4: margin used in Art. 9 person tables (0 = off)
-    llm_min_prob: float = 0.15     # v2 constraint: LLM may only move to roles the model finds plausible
-    b2_honest_conf: bool = False   # B2: LLM agreement does not raise confidence; review flag from model margin
-    b3_art9_llm: bool = False      # B3: in Art. 9 tables the LLM may raise a column to sensitive_attribute
+    margin_names: float = 0.03
+    margin_values: float = 0.10
+    margin_art9: float = 0.0
+    llm_min_prob: float = 0.15
+    b2_honest_conf: bool = False
+    b3_art9_llm: bool = False
     review_gap: float = 0.25
     review_below: float = 0.60
     llm_model: str | None = None
@@ -80,7 +80,7 @@ class DetectorV3:
 
     def _view(self, p: dict) -> dict:
         v = self.cfg.view
-        if v == "blind":  # like an obfuscated export: column AND table names hidden (v1 blind() keeps the table)
+        if v == "blind":
             q = blind(p)
             q["table"] = "t"
             return q
@@ -112,7 +112,6 @@ class DetectorV3:
                  "p_top3": "", "table_domain": "", "art9_table": False}
                 for i, (p, t) in enumerate(zip(ps, t1s))]
 
-        # table domain first: the Art. 9-aware rules need it before deciding
         domains, art9_tab = {}, {}
         use_llm = self.llm is not None and self.llm.available()
         doms = {}
@@ -154,11 +153,8 @@ class DetectorV3:
                     finals[i] = Decision(role, t1.subtype, comb[role], t1.reason + why_bias, "rules+" + used)
                 else:
                     sub = sub_for(role)
-                    # D1: the subtype the neighbours suggest must fit the values (subtype check only: role "" skips
-                    # the role rules, which the router's probabilities already weigh)
                     bad = guardrail(q, "", sub)
                     if bad and t1.confidence >= .5 and guardrail(q, "", t1.subtype) is None:
-                        # the router's role rested on a subtype the values contradict: keep the rule decision
                         finals[i] = Decision(t1.privacy_role, t1.subtype, t1.confidence,
                                              t1.reason + f"; router suggested {role}/{sub} but {bad}", "rules")
                         continue
@@ -172,7 +168,6 @@ class DetectorV3:
                                          + why_bias, used)
             finals = [context_adjust(q, f) if f.source != "rules" else f for q, f in zip(qs, finals)]
 
-        # ---- tier 3 ----
         if use_llm:
             for table, idx in by_table.items():
                 ask = [j for j, i in enumerate(idx) if finals[i].confidence < cfg.llm_below]
@@ -212,7 +207,6 @@ class DetectorV3:
                             if self.router else "OTHER")
                         finals[i] = Decision(role, st, conf, f"{why}: {reason}; before: {cur.privacy_role} "
                                                              f"({cur.confidence:.2f})", "table-llm")
-        # ---- output ----
         for i, (p, f) in enumerate(zip(ps, finals)):
             r = recs[i]
             r.update({"privacy_role": f.privacy_role, "subtype": f.subtype or "OTHER",

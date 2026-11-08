@@ -18,7 +18,7 @@ def found(text, fn):
 class TestRegex(unittest.TestCase):
     def test_checksums(self):
         self.assertIn(("NATIONAL_ID", "070889-9652"), found("hetu 070889-9652.", regex.find))
-        self.assertNotIn("NATIONAL_ID", [l for l, _ in found("hetu 070889-9653.", regex.find)])  # bad check char
+        self.assertNotIn("NATIONAL_ID", [l for l, _ in found("hetu 070889-9653.", regex.find)])
         self.assertIn(("IBAN", "FI75 9563 3224 8375 95"), found("tili FI75 9563 3224 8375 95", regex.find))
 
     def test_private_ip_is_not_personal(self):
@@ -88,7 +88,7 @@ class TestExamples(unittest.TestCase):
     def test_no_raw_pii_in_examples(self):
         t = "Asiakas Oscar Lindberg, hetu 070889-9652"
         gold = [{"start": 8, "end": 22, "label": "PERSON"}, {"start": 29, "end": 40, "label": "NATIONAL_ID"}]
-        pred = [{"start": 29, "end": 40, "label": "NATIONAL_ID"}]  # the name is missed
+        pred = [{"start": 29, "end": 40, "label": "NATIONAL_ID"}]
         h = example_html(t, pred, gold)
         self.assertNotIn("Oscar", h)
         self.assertNotIn("070889", h)

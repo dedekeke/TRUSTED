@@ -116,17 +116,17 @@ def test_validated_release_layout_and_formats(tmp_path, measured):
     assert {p.name for p in (out / "evaluation").iterdir()} == {"visits.csv", "labs.csv", "rowmap_visits.csv",
                                                                "rowmap_labs.csv", "input_manifest.json"}
     v = read_csv(out / "protected" / "visits.csv")
-    assert list(v.columns) == ["vid", "arrival", "city", "note", "age"]  # retained source order, then derived
+    assert list(v.columns) == ["vid", "arrival", "city", "note", "age"]
     assert v.vid.str.fullmatch(r"[0-9a-f]{32}").all() and len(v) == 300
     assert v.arrival.str.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:00").all()
-    assert v.note[0] == '[PERSON], "kipu"\nsoitti 0'  # Detect span applied; quoted multiline text round-trips
-    assert set(read_csv(out / "protected" / "labs.csv").vid) == set(v.vid)  # shared token domain
+    assert v.note[0] == '[PERSON], "kipu"\nsoitti 0'
+    assert set(read_csv(out / "protected" / "labs.csv").vid) == set(v.vid)
     rm = read_csv(out / "evaluation" / "rowmap_visits.csv")
-    assert rm.original_record_id[0] == "000000" and rm.protected_row.tolist()[:3] == ["0", "1", "2"]  # leading zeros
+    assert rm.original_record_id[0] == "000000" and rm.protected_row.tolist()[:3] == ["0", "1", "2"]
     m = json.loads((out / "manifest.json").read_text())
     assert m["validation_status"] == "validated" and m["approved_release"] and m["selection_status"] == "measured_ok"
     assert m["tables"]["visits"]["file"] == "protected/visits.csv" and len(m["tables"]["visits"]["sha256"]) == 64
-    assert "provenance" not in json.dumps(m)  # source digests stay in the private input manifest
+    assert "provenance" not in json.dumps(m)
     private = json.loads((out / "evaluation" / "input_manifest.json").read_text())
     assert private["provenance"]["dataset_fingerprint"] == fingerprint(data)[1]
     assert private["detect"]["spans_sha256"] == plan["provenance"]["spans_sha256"]
@@ -207,7 +207,7 @@ def test_free_text_needs_detect_spans_or_explicit_rule_fallback(tmp_path, measur
 def test_export_must_redact_free_text_the_way_search_measured_it(tmp_path, measured):
     _, _, plan = measured
     assert plan["measured"]["text_redaction"] == "detect_spans"
-    res, _ = release(tmp_path, measured, detect_dir=None, text_fallback=True)  # measured with spans, export without
+    res, _ = release(tmp_path, measured, detect_dir=None, text_fallback=True)
     assert res["status"] == "refused" and any("measured with detect_spans" in e for e in res["errors"])
 
 
@@ -224,7 +224,7 @@ def test_invalid_detect_spans_are_rejected(tmp_path, measured, breakage, code):
         lines[0]["span_id"] = "0" * 16
     if breakage in ("offsets", "span_id", "tampered"):
         (bad / "spans.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines) + ("\n" if breakage == "tampered" else ""))
-        if breakage != "tampered":  # keep the manifest consistent so the span check itself must catch it
+        if breakage != "tampered":
             man = json.loads((bad / "manifest.json").read_text())
             man["artifacts"]["spans"]["sha256"] = A.sha256_file(bad / "spans.jsonl")
             (bad / "manifest.json").write_text(json.dumps(man))
@@ -244,7 +244,7 @@ def test_review_items_block_only_released_or_required_fields(tmp_path, measured)
     res, _ = release(tmp_path, measured, {**plan, "review_queue": [{"column": "visits.city", **item}]})
     assert res["status"] == "refused" and any("unresolved review item" in e for e in res["errors"])
     res, _ = release(tmp_path / "b", measured, {**plan, "review_queue": [{"column": "labs.lab", **item}]})
-    assert res["status"] == "validated"  # dropped, unrequired: informational only
+    assert res["status"] == "validated"
 
 
 def test_output_directory_rules(tmp_path, measured):
@@ -259,7 +259,7 @@ def test_output_directory_rules(tmp_path, measured):
 
 def test_identifier_hit_fails_validation_and_keeps_staging_private(tmp_path):
     tables, labels, rel, req = demo()
-    tables["labs"].loc[0, "code"] = "maija.m@example.com"  # a KEEP column carrying an identifier
+    tables["labs"].loc[0, "code"] = "maija.m@example.com"
     data, detect, plan = bound_plan(tmp_path / "in", tables, labels, rel, req)
     assert plan["outcome"]["approved"]
     res = run(data, plan, KEY, tmp_path / "run", detect, scorecard=False)
@@ -274,7 +274,7 @@ def test_identifier_hit_fails_validation_and_keeps_staging_private(tmp_path):
 
 
 def test_hmac_token_scanner_hits_are_classified_not_ignored(tmp_path):
-    token = "0401234567" + "ab" * 11  # 32 hex chars that start like a Finnish mobile number
+    token = "0401234567" + "ab" * 11
     (tmp_path / "protected").mkdir()
     df = pd.DataFrame({"id": [token], "other": [token]})
     write_csv(df, tmp_path / "protected" / "t.csv")
@@ -312,7 +312,7 @@ def test_local_suppression_matches_the_measured_preview(tmp_path):
     levels = next(e["levels"] for e in plan["search_trace"] if e["evaluation"] == plan["measured"]["chosen_evaluation"])
     preview = _Evaluator(read, plan, KEY, [], read).build(levels, plan["suppression"])
     assert frames["visits"]["city"].tolist() == preview["visits"]["city"].astype(str).tolist()
-    assert stats["suppressed_rows"] == {"visits": 2} and len(frames["visits"]) == 100  # rows kept, QIs blanked
+    assert stats["suppressed_rows"] == {"visits": 2} and len(frames["visits"]) == 100
     res = run(data, plan, KEY, tmp_path / "run", scorecard=False)
     assert res["status"] == "validated", res.get("errors")
     tampered = {**plan, "search_trace": [{**e, "suppressed_fraction": 0.5} for e in plan["search_trace"]]}
@@ -363,11 +363,11 @@ def test_entity_pseudonyms_are_consistent_within_a_group_and_restart_across_grou
               {"start": 9, "end": 12, "label": "PERSON", "entity_id": "t:c:g1:P2"}],
              [{"start": 0, "end": 3, "label": "PERSON", "entity_id": "t:c:g1:P2"},
               {"start": 11, "end": 15, "label": "PERSON", "entity_id": "t:c:g1:P1"}],
-             [{"start": 0, "end": 4, "label": "PERSON", "entity_id": "t:c:g2:P1"}]]  # another conversation
+             [{"start": 0, "end": 4, "label": "PERSON", "entity_id": "t:c:g2:P1"}]]
     numbers = entity_numbers(spans)
     out = [redact_spans(t, s, numbers) for t, s in zip(texts, spans)]
     assert out == ["[PERSON_1] met [PERSON_2]", "[PERSON_2] called [PERSON_1]", "[PERSON_1] again"]
-    assert redact_spans(texts[0], spans[0]) == "[PERSON] met [PERSON]"  # typed_placeholders profile
+    assert redact_spans(texts[0], spans[0]) == "[PERSON] met [PERSON]"
     assert redact_spans("x", [{"start": 0, "end": 1, "label": "PERSON", "entity_id": None}], numbers) == "[PERSON]"
 
 

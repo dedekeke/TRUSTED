@@ -41,14 +41,13 @@ def make_llm(model: str | None = None):
 class JevLLM(TableLLMv3):
     def __init__(self, host: str | None = None, cache_dir=".cache/v3/jev", **kw):
         super().__init__(None, host or os.environ.get("JEV_HOST", "http://127.0.0.1:8001"), cache_dir, **kw)
-        self.model = "jev"  # replaced by the served weights' name in available(): 4-bit and 8-bit get separate caches
+        self.model = "jev"
 
     def available(self) -> bool:
         if self._ok is None:
             try:
                 with urllib.request.urlopen(f"{self.host}/health", timeout=3) as r:
                     info = json.loads(r.read())
-                # a causal read gives silently different answers; the server's load probe reports it
                 self._ok = info.get("prompt_attention", {}).get("attention") == "bidirectional"
                 self.model = str(info.get("model", self.model))
                 if not self._ok:

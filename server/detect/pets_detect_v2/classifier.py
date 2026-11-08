@@ -49,7 +49,6 @@ class ColumnClassifier:
                 warnings.simplefilter("ignore")
                 self.model.fit(x, y)
         self.classes_ = list(self.model.classes_)
-        # subtype model (same features); at prediction time it is restricted to subtypes seen with the chosen role
         self.sub_model = LogisticRegression(C=2.0, max_iter=3000)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

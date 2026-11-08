@@ -8,13 +8,12 @@ from server.select.policy import TRUST_LEVELS, candidates, targets, violations
 
 ROLES = ["direct_identifier", "technical_identifier", "record_key", "quasi_identifier", "sensitive_attribute",
          "free_text", "non_sensitive"]
-# every subtype detect.py can emit
 SUBTYPES = sorted(detect.DIRECT | detect.TECHNICAL | detect.PERSON_QI | detect.CONTEXT_QI | detect.ENTITY_IDS
                   | {"NATIONAL_ID", "URL", "DIAGNOSIS_CODE", "FINANCIAL_DATA", "RECORD_ID", "MEASUREMENT",
                      "FREE_TEXT", "CATEGORY", "OTHER", "ENTITY_ID"})
 IDS = {"direct_identifier", "technical_identifier", "record_key"}
 ID_SUBTYPES = detect.DIRECT | detect.TECHNICAL | detect.ENTITY_IDS | {"NATIONAL_ID", "RECORD_ID", "ENTITY_ID"}
-REROUTED = ID_SUBTYPES | {"BIRTH_DATE", "STREET_ADDRESS"}  # handled by their subtype's own rules (DROP + review)
+REROUTED = ID_SUBTYPES | {"BIRTH_DATE", "STREET_ADDRESS"}
 
 
 def lab(role, sub, conf=0.9):
@@ -47,8 +46,6 @@ def with_domain(r):
     return {**r, "params": {**r["params"], "domain": "rel/x"}} if r["action"] == "HMAC" else r
 
 
-# --- hard constraints across every role × subtype × trust × required × in_join
-
 def test_should_never_keep_identifiers_whatever_role_the_label_claims():
     for label, t, req, join, c in every_case():
         if label["privacy_role"] in IDS or label["subtype"] in ID_SUBTYPES:
@@ -79,8 +76,6 @@ def test_should_never_keep_low_confidence_columns():
     for label, t, req, join, c in every_case(conf=0.5):
         assert "KEEP" not in actions(c) and c["needs_review"] and actions(c)[-1] == "DROP"
 
-
-# --- ladders and context
 
 def test_should_drop_unrequired_columns_except_non_sensitive():
     for sub in ("AGE", "DIAGNOSIS_CODE", "FREE_TEXT", "CATEGORY"):
@@ -162,8 +157,6 @@ def test_should_offer_only_coarsest_rung_and_drop_for_low_confidence_required():
     assert methods(c) == ["month", None] and c["needs_review"]
 
 
-# --- precision
-
 def test_should_trim_rungs_coarser_than_precision_and_drop():
     assert methods(candidates(lab("quasi_identifier", "TIMESTAMP"), "contractual", True, precision="date")) == \
         ["floor_hour", "week_hour", "month_hour", "year_hour", "date"]
@@ -185,8 +178,6 @@ def test_should_reject_unknown_trust_level_and_role():
         candidates(lab("mystery", "AGE"), "internal", True)
 
 
-# --- targets
-
 def test_should_tighten_targets_with_trust():
     assert targets("internal")["k"] < targets("contractual")["k"] < targets("public")["k"]
     assert targets("public")["free_text"] is False
@@ -198,8 +189,6 @@ def test_should_apply_overrides_and_note_only_loosening():
     loose = targets("public", {"k": 4, "l": 2, "free_text": True})
     assert loose["k"] == 4 and len(loose["notes"]) == 3
 
-
-# --- violations on hand-made rungs (reviewer probe cases included)
 
 @pytest.mark.parametrize("label,rung,trust", [
     (lab("direct_identifier", "EMAIL"), keep(), "internal"),

@@ -1,7 +1,5 @@
-// Hardcoded demo data (synthetic, from the TrustED PETs Proving Ground 2026 package, CC BY 4.0 © Since AI ry).
 import type { Benchmark } from '@/types/data.types'
 
-/** pets-eval 1.0.0 scorecards of the reference baselines (results/ in the package) */
 export const BENCHMARK: Benchmark = {
  "customer_service": {
   "B0": {

@@ -1,8 +1,8 @@
-"""Rule matrix and generalisation ladders (plan §6–§7).
+"""Rule matrix and generalisation ladders.
 
 Rules are keyed on privacy_role × subtype × trust level, never on column or dataset names. For each column,
-`candidates()` returns the allowed rungs finest → coarsest; the search (PET-7) picks one, the transformer
-(PET-6) applies it. `violations()` accepts only DROP or a rung the matrix itself offers, so hand-edited plans
+`candidates()` returns the allowed rungs finest → coarsest; `search` picks one, `server.transform`
+applies it. `violations()` accepts only DROP or a rung the matrix itself offers, so hand-edited plans
 cannot bypass it. Pure functions, no I/O.
 """
 from __future__ import annotations
@@ -10,37 +10,34 @@ from __future__ import annotations
 from .detect import DIRECT, ENTITY_IDS, REVIEW_BELOW, TECHNICAL
 
 TRUST_LEVELS = ["internal", "contractual", "controlled_research", "public"]
-ENTITY_PSEUDONYM_TRUST = {"internal", "contractual"}  # free-text profile: numbered pseudonyms per conversation
-ACTIONS = {"KEEP", "DROP", "HMAC", "GENERALISE", "REDACT", "DERIVE", "WITHHOLD"}  # WITHHOLD is table-level
+ENTITY_PSEUDONYM_TRUST = {"internal", "contractual"}
+ACTIONS = {"KEEP", "DROP", "HMAC", "GENERALISE", "REDACT", "DERIVE", "WITHHOLD"}
 
-# Operations the transformer must implement; each rung uses exactly one. Params:
 METHODS = {
-    "hmac_sha256",      # {domain}: HMAC context shared by join partners; None here, the selector sets it
-    "ipv4_prefix",      # {}: truncate an IPv4 address to its /24 (a.b.c.0); generalisation, not pseudonymisation
-    "derive_age_band",  # {width, top}: age at the row's event date from DOB, banded; top = start of the open top band.
-                        #   Only used through plan["derived"]: the selector turns the DERIVE rung into a derived column
-    "age_band",         # {width, top}: band an age value
-    "week_hour",        # {}: Monday of the ISO week + HH:00 (exact date removed, hour and week kept)
-    "year_hour",        # {}: 1 January of the year + HH:00 (only year and hour of day kept)
-    "month_hour",       # {}: first day of the month + HH:00 (exact date and week removed, hour kept)
-    "floor_hour",       # {}: YYYY-MM-DD HH:00, floored never rounded
-    "date",             # {}: YYYY-MM-DD
-    "iso_week",         # {}: YYYY-Www
-    "month",            # {}: YYYY-MM
-    "year",             # {}: YYYY
-    "postcode_prefix",  # {digits}: keep the first n digits
-    "suppress_rare",    # {min_count}: blank values seen < min_count times (search's local suppression, not a rung)
-    "merge_rare",       # {min_count}: values seen < min_count times become "other"
-    "round_decimals",   # {digits}: round coordinates to n decimals
-    "round_numeric",    # {step}: round to the nearest multiple of step
-    "top_bottom_code",  # {lower_q, upper_q}: clamp values outside these quantiles (transformer supports it; no rung yet)
-    "icd_3char",        # {}: ICD-10 category, e.g. J18.9 -> J18
-    "diagnosis_group",  # {mapping}: must be "pets_eval.utility.health.diagnosis_group"; unmapped codes become blank
-    "icd_chapter",      # {}: first letter of the ICD-10 code
-    "url_host",         # {}: URL/domain -> lower-case host only (scheme, credentials, port, path, query dropped)
-    "registrable_domain",  # {}: host -> its registrable domain (a.b.example.com -> example.com); IPs -> /24
-    "redact_spans",     # {profile}: replace detected PII spans; profile "typed_placeholders" -> [PERSON],
-                        #   "entity_pseudonyms" -> [PERSON_1], numbered per Detect entity within one conversation
+    "hmac_sha256",
+    "ipv4_prefix",
+    "derive_age_band",
+    "age_band",
+    "week_hour",
+    "year_hour",
+    "month_hour",
+    "floor_hour",
+    "date",
+    "iso_week",
+    "month",
+    "year",
+    "postcode_prefix",
+    "suppress_rare",
+    "merge_rare",
+    "round_decimals",
+    "round_numeric",
+    "top_bottom_code",
+    "icd_3char",
+    "diagnosis_group",
+    "icd_chapter",
+    "url_host",
+    "registrable_domain",
+    "redact_spans",
 }
 NEEDS_METHOD = {"HMAC", "GENERALISE", "DERIVE", "REDACT"}
 
@@ -50,29 +47,25 @@ TIME_SUBTYPES = {"TIMESTAMP", "DATE", "BIRTH_DATE"}
 CATEGORICAL_QI = {"MUNICIPALITY", "LOCATION_NAME", "ORG_NAME", "OCCUPATION", "LANGUAGE", "SEX", "CATEGORY",
                   "NATIONALITY"}
 NUMERIC = {"MEASUREMENT", "FINANCIAL_DATA", "DURATION"}
-# Identifier subtypes are handled as identifiers whatever role a label gives them (a raw email is never KEEP).
 ID_SUBTYPE_ROLE = {**{s: "direct_identifier" for s in DIRECT | {"NATIONAL_ID"}},
                    **{s: "technical_identifier" for s in TECHNICAL | ENTITY_IDS | {"IMEI"}},
                    "ENTITY_ID": "technical_identifier", "RECORD_ID": "record_key"}
-# Subtypes handled by their own rules when the label's role doesn't fit them: subtype -> (role used, roles accepted).
 SUBTYPE_REROUTE = {
     **{s: (r, IDS) for s, r in ID_SUBTYPE_ROLE.items()},
-    "BIRTH_DATE": ("quasi_identifier", {"quasi_identifier", "sensitive_attribute"}),  # derive-only in any role
-    # identifier roles are stricter than these subtypes' own rules, so they are never rerouted
+    "BIRTH_DATE": ("quasi_identifier", {"quasi_identifier", "sensitive_attribute"}),
     "FREE_TEXT": ("free_text", IDS | {"free_text"}),
     "DIAGNOSIS_CODE": ("sensitive_attribute", IDS | {"sensitive_attribute", "quasi_identifier"}),
     "STREET_ADDRESS": ("quasi_identifier", IDS | {"quasi_identifier", "sensitive_attribute"}),
 }
-AGE_TOP = 80  # canonical bands 0-9 … 80+ (plan §9)
+AGE_TOP = 80
 ROLES = IDS | {"quasi_identifier", "sensitive_attribute", "free_text", "non_sensitive"}
-# metadata/taxonomy.md column subtypes (the vocabulary, not the training catalog)
 TAXONOMY_SUBTYPES = set("""PERSON_NAME NATIONAL_ID EMAIL PHONE STREET_ADDRESS POSTCODE MUNICIPALITY GPS_COORDINATE
     LOCATION_NAME BIRTH_DATE AGE SEX LANGUAGE NATIONALITY IBAN PAYMENT_CARD CUSTOMER_ID ACCOUNT_ID EMPLOYEE_ID
     STUDENT_ID PATIENT_ID CARD_ID DEVICE_ID IP_ADDRESS MAC_ADDRESS IMEI HOSTNAME USERNAME URL USER_AGENT LICENSE_PLATE
     PROPERTY_ID METER_ID TIMESTAMP DATE DURATION HEALTH_DATA DIAGNOSIS_CODE FINANCIAL_DATA EDUCATION_DATA SOCIAL_DATA
     OCCUPATION ORG_NAME MEASUREMENT CATEGORY AGGREGATE SECRET FREE_TEXT RECORD_ID OTHER""".split()) | {"ENTITY_ID"}
 SENSITIVE_CATEGORICAL = CATEGORICAL_QI | {"HEALTH_DATA", "EDUCATION_DATA", "SOCIAL_DATA"}
-NEVER_RAW = {"SECRET", "HEALTH_DATA", "EDUCATION_DATA", "SOCIAL_DATA"}  # contradicts a non_sensitive role
+NEVER_RAW = {"SECRET", "HEALTH_DATA", "EDUCATION_DATA", "SOCIAL_DATA"}
 
 
 def _r(action, method=None, **params) -> dict:
@@ -82,10 +75,8 @@ def _r(action, method=None, **params) -> dict:
 KEEP, DROP = _r("KEEP"), _r("DROP")
 HMAC = _r("HMAC", "hmac_sha256", domain=None)
 
-# Ladders: list of (precision tag, rung), finest → coarsest. The tag is what `precision=` refers to.
 _AGE = [(str(w), _r("GENERALISE", "age_band", width=w, top=AGE_TOP)) for w in (5, 10, 20)]
 _DOB = [(str(w), _r("DERIVE", "derive_age_band", width=w, top=AGE_TOP)) for w in (5, 10, 20)]
-# hour-preserving rungs first (week/month start + HH:00 keep the hour-of-day curve, drop the exact date)
 _TIMESTAMP = [("hour", _r("GENERALISE", "floor_hour")), ("hour", _r("GENERALISE", "week_hour")),
               ("hour", _r("GENERALISE", "month_hour")), ("hour", _r("GENERALISE", "year_hour")),
               ("date", _r("GENERALISE", "date")),
@@ -98,36 +89,27 @@ _GPS = [(str(d), _r("GENERALISE", "round_decimals", digits=d)) for d in (3, 2, 1
 _DIAGNOSIS = [("exact", KEEP), ("3char", _r("GENERALISE", "icd_3char")),
               ("group", _r("GENERALISE", "diagnosis_group", mapping="pets_eval.utility.health.diagnosis_group")),
               ("chapter", _r("GENERALISE", "icd_chapter"))]
-# shortcut: fixed absolute steps ignore the column's scale; switch to spec-given minimum precision when specs exist
 _NUMERIC = [("exact", KEEP)] + [(str(s), _r("GENERALISE", "round_numeric", step=s)) for s in (1, 10, 100)]
 
 
 def _categorical(k: int) -> list:
-    # merging only values rarer than k rarely closes small classes; the stronger rungs keep only common values
     return [("exact", KEEP), ("merged", _r("GENERALISE", "merge_rare", min_count=k)),
             ("merged", _r("GENERALISE", "merge_rare", min_count=k * 20)),
             ("merged", _r("GENERALISE", "merge_rare", min_count=k * 200))]
 
 
-# S5: paths and query strings carry tokens and personal pages; the host keeps the browsing signal, the registrable
-# domain keeps only the site
 _URL = [("host", _r("GENERALISE", "url_host")), ("domain", _r("GENERALISE", "registrable_domain"))]
 
-# Ladders keyed on subtype; also used when a sensitive attribute has one of these subtypes.
 SUBTYPE_LADDERS = {"AGE": _AGE, "BIRTH_DATE": _DOB, "TIMESTAMP": _TIMESTAMP, "DATE": _DATE, "POSTCODE": _POSTCODE,
                    "GPS_COORDINATE": _GPS, "URL": _URL, **{s: _NUMERIC for s in NUMERIC}}
 
-# Default risk targets per trust level. Proposals (plan §6), to confirm; a scenario's own target overrides them.
 DEFAULT_TARGETS = {
     "internal": {"k": 3},
     "contractual": {"k": 5, "l": 2},
     "controlled_research": {"k": 5, "l": 2},
     "public": {"k": 10, "l": 3, "free_text": False},
 }
-MAX_SUPPRESSION = 0.02  # local suppression budget, share of rows (plan §7.5)
-# S4: rows whose subject cannot be resolved (e.g. an ED visit registered without an identity code) may be at most
-# this share of a released table. They are counted conservatively: in each QI class all of them together are one
-# person (actions.small_classes, search.risk), so they never raise k.
+MAX_SUPPRESSION = 0.02
 MAX_UNKNOWN_SUBJECTS = 0.05
 
 
@@ -159,7 +141,6 @@ def _ladder(role: str, sub: str, trust_level: str, required: bool, in_join: bool
         if not (required or in_join):
             return [], None
         if role == "technical_identifier" and sub == "IP_ADDRESS" and not in_join:
-            # HMAC keeps addresses distinct; the /24 groups them (a location-type QI), so it is the coarser rung
             return [(None, HMAC), (None, _r("GENERALISE", "ipv4_prefix"))], None
         return [(None, HMAC)], None
     if role == "quasi_identifier":
@@ -192,8 +173,6 @@ def _ladder(role: str, sub: str, trust_level: str, required: bool, in_join: bool
             return [], None
         if trust_level == "public":
             return [], "free text not releasable at public trust: needs aggregate/DP path"
-        # contractual/internal recipients (e.g. an LLM vendor reading transcripts) need to follow who said what:
-        # numbered placeholders consistent within one conversation/record, never across them
         profile = "entity_pseudonyms" if trust_level in ENTITY_PSEUDONYM_TRUST else "typed_placeholders"
         return [(None, _r("REDACT", "redact_spans", profile=profile))], None
     if role == "non_sensitive":
@@ -264,13 +243,11 @@ def candidates(label: dict, trust_level: str, required: bool, in_join: bool = Fa
         elif str(precision) not in tags:
             raise ValueError(f"precision {precision!r} not in ladder {tags} for {role}/{sub}")
         else:
-            ladder = ladder[: len(tags) - tags[::-1].index(str(precision))]  # keep every rung at that precision
+            ladder = ladder[: len(tags) - tags[::-1].index(str(precision))]
     rungs = [r for _, r in ladder]
     if low_conf:
-        # deny by default: unconfirmed labels get only the coarsest protective rung, never KEEP
         rungs = [r for r in rungs[-1:] if r["action"] != "KEEP"] if needed else []
         notes.append("low-confidence label: " + ("coarsest rung or DROP only" if needed else "dropped (deny by default)"))
-    # DROP closes the ladder unless the column is needed and confirmed (precision asked for = needed)
     if not rungs or low_conf or not (needed or precision is not None):
         rungs.append(DROP)
     rungs = [{**r, "params": dict(r["params"]), "level": i} for i, r in enumerate(rungs)]

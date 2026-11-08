@@ -68,7 +68,6 @@ def index_page(res: dict, preds: dict) -> str:
     df = pd.DataFrame(rows, columns=["version", "F1 hidden", "sens. recall hidden", "F1 sens. attr. hidden",
                                      "subtype acc. hidden", "F1 names", "sens. recall names", "F1 sens. attr. names"])
     body += "<h2>Overall (9 labelled datasets, leave-one-dataset-out)</h2>" + table_html(df, df.columns[1:])
-    # per dataset
     body += "<h2>Per dataset (macro-F1)</h2>"
     tr = ""
     for ds in res["datasets"]:
@@ -85,7 +84,6 @@ def index_page(res: dict, preds: dict) -> str:
              '<th class=num>v3<br>hidden</th><th class=num>Δ v3 vs best<br>of v1/v2</th><th class=num>v1<br>names</th>'
              '<th class=num>v2<br>names</th><th class=num>v3<br>names</th><th class=num>Δ v3 vs best<br>of v1/v2</th>'
              f'<th>reports</th></tr>{tr}</table></div>')
-    # tracked columns
     cat = res["_catalog"]
     tr = ""
     for ds, t, c in TRACK:
@@ -102,7 +100,6 @@ def index_page(res: dict, preds: dict) -> str:
              '"review" = flagged needs_review for the Select step.</p><div class="card scroll"><table><tr><th>column</th>'
              '<th>catalog</th><th>v2 hidden</th><th>v3 hidden</th><th>v2 names</th><th>v3 names</th></tr>'
              f'{tr}</table></div>')
-    # mixed
     if res.get("mixed"):
         df = pd.DataFrame([[k, v["macro_f1"], v["sensitive_recall"], v["per_role"]["sensitive_attribute"]["f1"]]
                            for k, v in res["mixed"].items()], columns=["tier 2", "macro-F1", "sensitive recall",

@@ -1,7 +1,3 @@
-/**
- * Transform step: apply each column's PET, then (optionally) enforce k-anonymity by climbing the generalisation
- * ladders of the quasi-identifiers first and suppressing individual cells only as a last resort.
- */
 import type {
   ColumnDetection,
   ColumnPolicy,
@@ -20,7 +16,6 @@ export interface TransformContext {
   names: RegExp | null
 }
 
-// ------------------------------------------------------------------ keyed pseudonyms
 export async function newSessionKey(): Promise<CryptoKey> {
   return crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
 }
@@ -36,10 +31,8 @@ async function hmacToken(key: CryptoKey, value: string): Promise<string> {
   )
 }
 
-// ------------------------------------------------------------------ redaction dictionary
 const escapeRx = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
-/** Names that appear in name columns of the same table are redacted from its free text. */
 export function buildNameDictionary(dataset: Dataset, dets: ColumnDetection[]): RegExp | null {
   const tokens = new Set<string>()
   for (const d of dets) {
@@ -62,11 +55,10 @@ export function redactText(text: string, names: RegExp | null): string {
   return out
 }
 
-// ------------------------------------------------------------------ per-value transforms
 function ageBand(age: number, level: number): string {
   if (!Number.isFinite(age) || age < 0) return ''
   const w = [5, 10, 20][level] ?? 10
-  if (age >= 80) return '80+' // top-coding: few people are very old
+  if (age >= 80) return '80+'
   const lo = Math.floor(age / w) * w
   return `${lo}-${lo + w - 1}`
 }
@@ -141,7 +133,6 @@ export function transformColumn(values: string[], p: ColumnPolicy, ctx: Transfor
   return out
 }
 
-// ------------------------------------------------------------------ k-anonymity by generalise-first
 const ESCALATE_FROM_KEEP = 'rare_merge' as const
 
 function nextLevel(p: ColumnPolicy): ColumnPolicy | null {
@@ -163,7 +154,6 @@ export async function applyPolicies(
   const byCol = new Map(policies.map((p) => [p.column, { ...p }]))
   const ctx: TransformContext = { tokens: new Map(), names: buildNameDictionary(dataset, dets) }
 
-  // keyed tokens for every distinct value of every pseudonymised column (same value -> same token across columns)
   for (const p of byCol.values()) {
     if (p.pet !== 'pseudonymise') continue
     for (const r of dataset.rows) {
@@ -208,7 +198,6 @@ export async function applyPolicies(
       detail: `k ≥ ${k} on ${qis.join(', ')}${scenarioQis.length ? ' (the QIs named in the scenario target)' : ' (all detected QIs)'}; before: ${(ka.shareBelowK * 100).toFixed(1)} % of rows in classes < ${k}`,
     })
     for (let iter = 0; iter < 40 && ka.shareBelowK > 0; iter++) {
-      // escalate the most detailed QI that still has a coarser level
       const candidates = qis
         .map((c) => ({ c, next: nextLevel(byCol.get(c)!), distinct: new Set(colValues.get(c)).size }))
         .filter((x) => x.next && x.distinct > 2)
@@ -234,7 +223,6 @@ export async function applyPolicies(
       })
     }
     if (ka.shareBelowK > 0) {
-      // local suppression (last resort): blank the most detailed QI of rows still in small classes
       const order = [...qis].sort((a, b) => new Set(colValues.get(b)).size - new Set(colValues.get(a)).size)
       for (const c of order) {
         const keys = rows.map((r) => qis.map((q) => r[q]).join('␟'))

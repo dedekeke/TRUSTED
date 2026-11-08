@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# Start JEV (LLM tier, :8001), the API (server.api, :8000) and the UI (Vite, :5174). Ctrl-C stops what it started.
-#   PRIVACY_TOOL_HMAC_KEY=... ./start.sh
-# Optional env: PETS_ROOT (challenge package root, default: parent of this folder), DETECT_MODEL (detect v3 model
-# dir, default: newest outputs/*/model), RUNS (default: fresh outputs/runs-<timestamp>), NO_JEV=1 (skip the LLM tier).
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
@@ -26,7 +22,7 @@ busy 8000 && die "port 8000 is in use (an old server.api?); stop it first"
 busy 5174 && die "port 5174 is in use (an old Vite?); stop it first"
 
 pids=()
-trap 'kill ${pids[@]+"${pids[@]}"} 2>/dev/null; wait' EXIT INT TERM  # bash 3.2 (macOS): no empty-array expansion under set -u
+trap 'kill ${pids[@]+"${pids[@]}"} 2>/dev/null; wait' EXIT INT TERM
 
 if [ -n "${NO_JEV:-}" ]; then
   echo "JEV: skipped (NO_JEV); Detect runs tiers 1-2 only"
@@ -46,7 +42,7 @@ fi
 echo "model $MODEL"
 echo "runs  $RUNS"
 echo "UI    http://localhost:5174/  (Ctrl-C stops everything started here)"
-while :; do  # bash 3.2 has no `wait -n`: poll, and when one service dies the trap stops the rest
+while :; do
   for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null || exit 1; done
   sleep 2
 done

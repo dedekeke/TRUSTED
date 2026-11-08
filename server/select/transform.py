@@ -16,7 +16,7 @@ from server.actions import (  # noqa: F401  re-exported for older imports
     _blank, _fmt, _numeric, _rare, _time, apply_column, derive_age_band, execute, hmac_token, redact,
 )
 
-UNAPPROVED_STATUS = {"policy_valid", "target_unmet", "budget_exhausted", "measured_ok"}  # need allow_unapproved
+UNAPPROVED_STATUS = {"policy_valid", "target_unmet", "budget_exhausted", "measured_ok"}
 UNAPPROVED_NOTICE = "NOT_APPROVED.txt"
 
 
@@ -83,7 +83,6 @@ def apply(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, out_dir: Path
     if eval_dir is not None:
         for t, td in plan["tables"].items():
             if td["action"] == "RELEASE" and t in tables and not td.get("record_key"):
-                # positional ids match nothing in the scorer and would report false zero risk
                 raise ValueError(f"table {t} needs a record_key for its scoring row map")
     out, stats = execute(tables, plan, key)
     stats = {"blanked": stats["blanked"], "rows": stats["rows"], "release_gate": gate}

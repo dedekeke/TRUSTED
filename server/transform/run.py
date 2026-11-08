@@ -29,7 +29,7 @@ from .report import diagnostics, manifest, summary_md
 
 GATING = ("serialized_round_trip", "row_maps", "actions_applied", "joins", "suppression", "risk", "utility",
           "identifier_scan")
-TARGET_CHECKS = ("risk", "utility")  # recorded, not gating, for an explicit --allow-unapproved export
+TARGET_CHECKS = ("risk", "utility")
 NOT_APPROVED = "NOT_APPROVED.txt"
 
 
@@ -195,7 +195,6 @@ def run(data_dir, plan: dict, key: bytes, out_dir, detect_dir=None, text_fallbac
     tables = read_tables(data_dir)
     if not tables:
         raise ValueError(f"no CSV tables in {data_dir}")
-    # binding first: a plan or detect artifact for other input bytes is rejected before anything is written
     plan = {**plan, "plan_sha256": A.check_plan(data_dir, plan, plan_bytes or json.dumps(plan).encode())}
     released = {t for t, d in plan["tables"].items() if d["action"] == "RELEASE"}
     redact_refs = {f"{c['table']}.{c['column']}" for c in plan["columns"]
@@ -204,7 +203,7 @@ def run(data_dir, plan: dict, key: bytes, out_dir, detect_dir=None, text_fallbac
     if detect_dir is not None:
         detect, by_ref = span_io.load(detect_dir, data_dir, plan)
         spans = span_io.align(detect, by_ref, tables, redact_refs)
-    out_root.mkdir(parents=True, exist_ok=False)  # exclusive reservation of a fresh run directory
+    out_root.mkdir(parents=True, exist_ok=False)
 
     errors = preflight(tables, plan, key, spans, text_fallback, allow_unapproved)
     measured_text = (plan.get("measured") or {}).get("text_redaction")
@@ -254,7 +253,7 @@ def run(data_dir, plan: dict, key: bytes, out_dir, detect_dir=None, text_fallbac
         return {"status": "validation_failed", "errors": [p for c in failed for p in c["problems"]],
                 "checks": checks, "out": str(out_root)}
 
-    for d in ("protected", "evaluation", "reports"):  # publish: only now does protected/ appear at the top level
+    for d in ("protected", "evaluation", "reports"):
         (stage / d).rename(out_root / d)
     stage.rmdir()
     scorecard_status = {"status": "not_run", "reason": "disabled"}
@@ -272,5 +271,5 @@ def run(data_dir, plan: dict, key: bytes, out_dir, detect_dir=None, text_fallbac
     (out_root / "reports" / "summary.md").write_text(summary_md(plan, checks, stats, status, scorecard_status),
                                                      encoding="utf-8")
     write_json(manifest(plan, out_root, out_root, checks, status, stats, scorecard_status),
-               out_root / "manifest.json")  # written last: its presence with "validated" marks the release
+               out_root / "manifest.json")
     return {"status": status, "checks": checks, "out": str(out_root)}

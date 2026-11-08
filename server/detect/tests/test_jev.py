@@ -74,10 +74,10 @@ class TestJev(unittest.TestCase):
             self.assertAlmostEqual(a["confidence"], .9)
             self.assertIn("sensitive_attribute 0.90", a["reason"])
             self.assertEqual(llm.model, "fake-4bit")
-            n = len(SEEN)  # domain + role + subtype + art9
+            n = len(SEEN)
             self.assertEqual(n, 4)
             JevLLM(self.host, cache_dir=d).label_columns("visits", ps, [("x", "y", .3)] * 2, [0], dom, True)
-            self.assertEqual(len(SEEN), n)  # second run served from cache
+            self.assertEqual(len(SEEN), n)
 
     def test_causal_server_is_refused(self):
         ATTENTION["attention"] = "causal"

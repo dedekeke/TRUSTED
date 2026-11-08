@@ -1,4 +1,4 @@
-"""Run v1 (session "Read challenge") and v2 on every dataset, in both modes, score them and write the reports.
+"""Run v1 and v2 on every dataset, in both modes, score them and write the reports.
 
 Same profiles, same LLM model (qwen2.5:7b, temperature 0), same leave-one-dataset-out protocol for both.
 Results are saved as CSV/JSON in out/compare/ so the HTML can be rebuilt without re-running (`report` command).

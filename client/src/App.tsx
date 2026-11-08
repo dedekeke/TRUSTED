@@ -21,7 +21,6 @@ function Themed() {
 
 export default function App() {
   return (
-    // `layer` puts Ant Design's CSS in @layer antd so Tailwind utilities can override it
     <StyleProvider layer>
       <ThemeProvider>
         <Themed />
