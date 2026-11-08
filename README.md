@@ -300,6 +300,14 @@ achieved, utility per task, validation checks, and the scorecard compared with B
 `results/benchmark.json`). A run stopped by `review_required` is resumed from the Review step: the confirmed labels
 go to `select --confirm` exactly as on the CLI. The **Protected data** button downloads `protected/` only.
 
+Everything at once (JEV on :8001 if installed, the API on :8000, the UI on :5174; Ctrl-C stops all):
+
+```bash
+PRIVACY_TOOL_HMAC_KEY=... ./start.sh      # optional: DETECT_MODEL=<dir>, RUNS=<new dir>, NO_JEV=1, PETS_ROOT=<package root>
+```
+
+Or by hand:
+
 ```bash
 # terminal 1 (repository root): the API, with the HMAC key and a trained Detect v3 model
 PRIVACY_TOOL_HMAC_KEY=... python -m server.api --model <detect model dir> --runs <runs dir> [--port 8000]
