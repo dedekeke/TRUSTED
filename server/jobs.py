@@ -412,6 +412,10 @@ class Jobs:
             self._set(d, "evaluate", status="success", summary=api_views.summary("evaluate", d, ctx))
         elif steps["transform"]["status"] in OK and no_scorecard:
             self._set(d, "evaluate", status="skipped", summary="scorecard disabled (no_scorecard)")
+        elif steps["transform"]["status"] in OK and ctx.get("transform"):
+            sc = (self._read(ctx["transform"], "manifest.json") or {}).get("scorecard") or {}
+            self._set(d, "evaluate", status="failed", summary="scorecard not produced",
+                      error=f"scorecard {sc.get('status', 'missing')}: {sc.get('reason', 'no reports/scorecard.json')}")
         steps = self._status(d)["steps"]
         for s in STEPS:
             if steps[s]["status"] in ("queued", "running"):

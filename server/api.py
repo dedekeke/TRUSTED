@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "detect"))
 from pets_eval.io import find_package_root, load_scenarios  # noqa: E402
 
 from server import jobs as job_runner  # noqa: E402
+from server.guard import guard  # noqa: E402,F401  (server.api.guard is public)
 from server.select import __main__ as cli  # noqa: E402
 from server.select import artifacts, select  # noqa: E402
 from server.select import labels as detection_labels  # noqa: E402
@@ -48,27 +49,6 @@ class ApiError(Exception):
     def __init__(self, status: int, code: str, message: str):
         super().__init__(message)
         self.status, self.code = status, code
-
-
-def guard(root: Path) -> list[str]:
-    """Audit hook: refuse opening evaluation-only files under root. Returns the list it appends refusals to."""
-    root = root.resolve()
-    banned = [root / "metadata" / "field_catalog.csv", root / "metadata" / "pii_spans", root / "truth",
-              root / "holdout"]
-    refused: list[str] = []
-
-    def hook(event, args):
-        if event == "open" and isinstance(args[0], (str, bytes, os.PathLike)):
-            p = Path(os.fsdecode(args[0]))
-            if not p.is_absolute():
-                p = Path.cwd() / p
-            p = Path(os.path.normpath(p))
-            if any(p == b or b in p.parents for b in banned):
-                refused.append(str(p))
-                raise PermissionError(f"guard: evaluation-only file opened at runtime: {p}")
-
-    sys.addaudithook(hook)
-    return refused
 
 
 def _bool(v) -> bool:

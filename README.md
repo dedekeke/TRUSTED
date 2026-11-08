@@ -86,7 +86,8 @@ PRIVACY_TOOL_HMAC_KEY=... ../.venv/bin/python -m server.api --model <detect mode
 cd client && VITE_API_BASE_URL=/ npm run dev       # Vite proxies /api to :8000
 ```
 
-`--guard` refuses any read of the catalog, gold spans, `truth/` or `holdout/`. The HMAC key comes only from
+`--guard` refuses any read of the catalog, gold spans, `truth/` or `holdout/` by Detect, Select, Search or
+Transform; only the report-only scorecard after export may read them (`server/guard.py`, `evaluation()`). The HMAC key comes only from
 `PRIVACY_TOOL_HMAC_KEY`; it is never written to an output. Every run writes into a fresh directory.
 
 The whole chain from the command line (each stage through its own CLI, into `detect/`, `select/`, `search/`,
