@@ -36,6 +36,7 @@ export const JOB_META: Record<JobState, { label: string; color: string }> = {
   needs_review: { label: 'Waiting for review', color: 'gold' },
   succeeded: { label: 'Succeeded', color: 'success' },
   failed: { label: 'Failed', color: 'error' },
+  cancelled: { label: 'Cancelled', color: 'default' },
 }
 
 export function formatDuration(s?: number | null) {

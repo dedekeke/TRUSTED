@@ -4,7 +4,7 @@ export type StepName = 'input' | 'detect' | 'review' | 'select' | 'search' | 'tr
 
 export type StepStatus = 'queued' | 'running' | 'success' | 'failed' | 'needs_review' | 'warning' | 'skipped'
 
-export type JobState = 'created' | 'running' | 'needs_review' | 'succeeded' | 'failed'
+export type JobState = 'created' | 'running' | 'needs_review' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface JobStep {
   name: StepName

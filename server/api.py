@@ -318,6 +318,7 @@ def handler(api: Api):
               ("POST", re.compile(r"^/api/jobs/([^/]+)/confirm$"),
                lambda m, b: api.jobs.confirm(m[1], b.get("confirmations"), b.get("allow_downgrade", False),
                                              api.validate_confirmation)),
+              ("POST", re.compile(r"^/api/jobs/([^/]+)/cancel$"), lambda m, b: api.jobs.cancel(m[1])),
               ("GET", re.compile(r"^/api/jobs/([^/]+)/steps/([a-z]+)$"), lambda m, b: api.jobs.step_view(m[1], m[2])),
               ("GET", re.compile(r"^/api/jobs/([^/]+)/steps/([a-z]+)/log$"),
                lambda m, b: api.jobs.step_log(m[1], m[2]))]

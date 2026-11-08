@@ -63,6 +63,10 @@ class JobError(Exception):
         self.status, self.code = status, code
 
 
+class Cancelled(Exception):
+    """Raised in the worker before the next stage once the job was cancelled."""
+
+
 class _StepLog(io.TextIOBase):
     """stdout/stderr sink whose file follows the current step."""
 
@@ -110,6 +114,7 @@ class Jobs:
         self.benchmark = benchmark or {}
         self.scenarios = scenarios or []
         self.threads: dict[str, threading.Thread] = {}
+        self.cancelled: set[str] = set()
 
     # ---------------------------------------------------------------- files
     def dir(self, job_id: str) -> Path:
@@ -272,6 +277,13 @@ class Jobs:
         self._spawn(job_id, d, "select", attempt, str(path))
         return self.state(job_id)
 
+    def cancel(self, job_id: str) -> dict:
+        """Stop a running job before its next stage; the stage already running finishes (threads cannot be killed)."""
+        d = self.dir(job_id)
+        if self._status(d)["state"] == "running":
+            self.cancelled.add(job_id)
+        return self.state(job_id)
+
     # ---------------------------------------------------------------- worker
     def _spawn(self, job_id, d, start, attempt, confirm):
         t = threading.Thread(target=self._work, args=(d, start, attempt, confirm), daemon=True, name=f"job-{job_id}")
@@ -291,16 +303,22 @@ class Jobs:
         log = _StepLog(d / "logs")
         with RUN_LOCK, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log), _package_root(self.root):
             try:
+                if d.name in self.cancelled:  # cancelled while waiting for RUN_LOCK
+                    raise Cancelled
                 if start == "detect":
                     self._input(d, log)
                     if self._status(d)["steps"]["input"]["status"] != "success":
                         return
 
                 def on_step(stage, entry):
+                    if entry.get("status") == "running" and d.name in self.cancelled:
+                        raise Cancelled
                     log.step = stage
                     self._on_step(d, stage, entry, attempt)
                 pipeline.run(self._namespace(d, confirm), on_step=on_step, detect_fn=self.detect_fn,
                              start=start, attempt=attempt)
+            except Cancelled:
+                print("cancelled by the user", file=sys.stderr)
             except SystemExit as e:  # pipeline refuses (missing key, existing dir)
                 print(f"pipeline refused: {e.code}", file=sys.stderr)
                 self._fail_running(d, f"pipeline refused: {e.code}")
@@ -403,7 +421,10 @@ class Jobs:
             if steps[s]["status"] in ("queued", "running"):
                 self._set(d, s, status="skipped")
         steps = self._status(d)["steps"]
-        if steps["review"]["status"] == "needs_review":
+        if d.name in self.cancelled:
+            self.cancelled.discard(d.name)
+            state = "cancelled"
+        elif steps["review"]["status"] == "needs_review":
             state = "needs_review"
         elif all(steps[s]["status"] in OK or (s == "evaluate" and no_scorecard and steps[s]["status"] == "skipped")
                  for s in STEPS):

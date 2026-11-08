@@ -3,6 +3,7 @@ import { Alert, Button, Card, Skeleton, Tag, Tooltip } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { jobs } from '@/services/api'
 import { useJob } from '../hooks/useJob'
+import { useLeaveGuard } from '../hooks/useLeaveGuard'
 import { JOB_META } from '../stepMeta'
 import StatusIcon from './StatusIcon'
 import RunTimeline from './RunTimeline'
@@ -11,6 +12,7 @@ import RunTimeline from './RunTimeline'
 export default function JobView({ id }: { id: string }) {
   const navigate = useNavigate()
   const { job, error, refresh, setJob } = useJob(id)
+  useLeaveGuard(id, job?.state === 'running')
 
   if (error && !job)
     return <Alert showIcon type="error" title={`Could not load run ${id}: ${error.code}`} description={error.message} />
@@ -34,7 +36,9 @@ export default function JobView({ id }: { id: string }) {
                     ? 'failed'
                     : job.state === 'needs_review'
                       ? 'needs_review'
-                      : 'running'
+                      : job.state === 'cancelled'
+                        ? 'skipped'
+                        : 'running'
               }
             />
             <div className="min-w-0">
