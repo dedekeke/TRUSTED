@@ -221,3 +221,18 @@ def test_person_context_not_spread_to_unlinked_tables():
     req["required"]["weather.day"] = ["U6"]
     c = by_ref(select(tables, labels, rel, req))
     assert c["weather.day"]["privacy_role"] == "non_sensitive"
+
+
+def test_same_name_join_across_three_tables_is_checked_pairwise():
+    """EDU-S2: one requirement join can group the same column name in 3+ tables (student_id); it must not crash."""
+    tables, labels, rel, req = inputs()
+    tables["scans"] = pd.DataFrame({"sid": ["S1", "S2"], "vid": ["V1", "V2"]})
+    labels = pd.concat([labels, pd.DataFrame([lab("scans", "sid", "record_key", "RECORD_ID", evidence="test"),
+                                              lab("scans", "vid", "technical_identifier", "OTHER", evidence="test")])],
+                       ignore_index=True)
+    rel["keys"].append({"column": "scans.sid"})
+    rel["joins"].append({"parent": "visits.vid", "child": "scans.vid", "coverage": 1.0, "orphans": 0})
+    req["required"]["scans.vid"] = ["U2"]
+    req["joins"][0]["columns"] = ["labs.vid", "scans.vid", "visits.vid"]
+    c = by_ref(select(tables, labels, rel, req))
+    assert c["visits.vid"]["params"]["domain"] == c["labs.vid"]["params"]["domain"] == c["scans.vid"]["params"]["domain"]

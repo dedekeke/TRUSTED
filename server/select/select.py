@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from itertools import combinations
 
 import pandas as pd
 
@@ -155,10 +156,14 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
     warnings += [f"relations: {x}" for x in relations.get("notices", [])]
     trusted = [j for j in relations.get("joins", []) if j.get("coverage", 1.0) >= MIN_JOIN_COVERAGE]
     relations = {**relations, "joins": trusted}
-    discovered = {frozenset((j["parent"], j["child"])) for j in trusted}
-    for j in requirements.get("joins") or []:
-        a, b = j["columns"]
-        if frozenset((a, b)) not in discovered:
+    linked = _Domains()  # columns connected by trusted joins, transitively (child -> parent <- child)
+    for j in trusted:
+        linked.union(j["parent"], j["child"])
+    # a requirement join groups 2+ columns (the same name in several tables, e.g. student_id in 3 tables);
+    # each pair must be connected by trusted joins, directly or through a shared parent
+    pairs = [(j, a, b) for j in requirements.get("joins") or [] for a, b in combinations(j["columns"], 2)]
+    for j, a, b in pairs:
+        if linked.find(a) != linked.find(b):
             ids = all(lab.get(x, {}).get("privacy_role") in ID_ROLES for x in (a, b))
             if j.get("kind", "declared") == "same_name" and ids:  # the analysis needs a join the data doesn't support
                 errors.append(f"{a} = {b} is needed by {', '.join(j.get('tasks', []))} but relations found no join "

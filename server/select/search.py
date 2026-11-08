@@ -81,14 +81,16 @@ class _Evaluator:
             qis = self.qis(table, df)
             subjects = self.subjects[table]
             unknown = int(subjects.isna().sum())
-            # One contribution per subject/class; repeated visits never inflate k.
-            known = df.loc[subjects.notna()].copy()
+            # One contribution per subject/class; repeated visits never inflate k. Unresolved rows of a class
+            # together count as one person (T.with_unknown), the most conservative reading.
+            known = df.copy()
             marker = object()
-            known[marker] = subjects.loc[subjects.notna()]
+            known[marker] = T.with_unknown(subjects).values
             people = known.drop_duplicates([marker] + qis)
             km = privacy.k_anonymity(people, qis, thresholds=(k,))
             sizes = privacy.class_sizes(people, qis)
             r = {'qis': qis, 'rows': len(df), 'unknown_subject_rows': unknown,
+                 'unknown_subject_share': unknown / len(df) if len(df) else 0.,
                  'k_anonymity': km, 'sample_uniqueness': privacy.sample_uniqueness(people, qis),
                  'share_below_k': float((sizes < k).mean()) if len(sizes) else 0.,
                  'mean_reid': float((1 / sizes).mean()) if len(sizes) else 0.,
@@ -125,12 +127,19 @@ class _Evaluator:
         return scores
 
 
+def _unknown_breach(r: dict, targets: dict) -> bool:
+    """S4: unresolved subjects are allowed up to targets['max_unknown_subjects'] (plans without it: none)."""
+    share = r.get('unknown_subject_share', 1.0 if r['unknown_subject_rows'] else 0.0)
+    return bool(r['unknown_subject_rows']) and share > targets.get('max_unknown_subjects', 0.0)
+
+
 def risk_violations(risk: dict, targets: dict) -> list[str]:
     """Named k/l/t and subject-identity breaches of measured risk; empty means the risk targets are met."""
     out = []
     for table, r in risk.items():
-        if r['unknown_subject_rows']:
-            out.append(f"{table}: {r['unknown_subject_rows']} rows have unresolved subject identity")
+        if _unknown_breach(r, targets):
+            out.append(f"{table}: {r['unknown_subject_rows']} rows ({r['unknown_subject_share']:.1%}) have unresolved "
+                       f"subject identity, above {targets.get('max_unknown_subjects', 0):.0%}")
         if r['share_below_k'] > 0:
             out.append(f"{table}: k={r['k_anonymity'].get('min_k')} < {targets['k']}; "
                        f"{r['share_below_k']:.2%} of known subject/class entries below target")
@@ -168,9 +177,11 @@ def _outcome(plan, current, failed, tau, base, budget, used, unexplored):
         ts = {c: m['t_closeness'].get('max_t') for c, m in r['sensitive'].items()}
         achieved[table] = {'min_k': r['k_anonymity'].get('min_k'), 'share_below_k': r['share_below_k'],
                            'unknown_subject_rows': r['unknown_subject_rows'], 'l': ls, 't': ts}
-        if r['unknown_subject_rows']:
-            violations.append({'metric': 'subject_identity', 'table': table, 'target': 0,
-                               'achieved': r['unknown_subject_rows'], 'requirements': needs(table)})
+        if _unknown_breach(r, targets):
+            violations.append({'metric': 'subject_identity', 'table': table,
+                               'target': targets.get('max_unknown_subjects', 0.0),
+                               'achieved': round(r['unknown_subject_share'], 4),
+                               'rows': r['unknown_subject_rows'], 'requirements': needs(table)})
         if r['share_below_k']:
             violations.append({'metric': 'k', 'table': table, 'target': targets['k'],
                                'achieved': r['k_anonymity'].get('min_k'), 'share_below_k': r['share_below_k'],

@@ -141,6 +141,28 @@ def _int(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+def subject_suggestions(manifest: dict | None, tables: dict) -> list[dict]:
+    """Detect's subject suggestions (linkage kind "subject") as {table, column, confidence, needs_review,
+    non_blank_share}; only columns of the input. The linkage schema itself is checked in check_evidence."""
+    path = (manifest or {}).get("_paths", {}).get("linkage")
+    if not path:
+        return []
+    try:
+        link = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return []
+    schema = {(t, c) for t, df in tables.items() for c in df.columns}
+    out = []
+    for r in (link.get("relations") or []) if isinstance(link, dict) else []:
+        left = r.get("left") if isinstance(r, dict) else None
+        if not isinstance(left, dict) or r.get("kind") != "subject" or (left.get("table"), left.get("column")) not in schema:
+            continue
+        ev = r.get("evidence") if isinstance(r.get("evidence"), dict) else {}
+        out.append({"table": left["table"], "column": left["column"], "confidence": float(r.get("confidence") or 0),
+                    "needs_review": bool(r.get("needs_review")), "non_blank_share": float(ev.get("non_blank_share") or 0)})
+    return out
+
+
 def check_evidence(plan: dict, tables: dict, labels, manifest: dict) -> tuple[list, list, dict]:
     """(errors, warnings, summary) for spans/linkage. Summary holds counts and ids only, never text or values."""
     errors, warnings = [], []

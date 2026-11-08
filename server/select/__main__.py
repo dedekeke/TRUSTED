@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+from itertools import combinations
 from pathlib import Path
 
 import pandas as pd
@@ -65,8 +66,11 @@ def cmd_select(a) -> int:
         req = requirements.from_spec(a.spec)
     else:
         req = requirements.no_purpose(a.no_purpose, dataset)
-    rel = relations.discover(tables, labels, {"joins": [j["columns"] for j in req.get("joins") or []]}
+    rel = relations.discover(tables, labels, {"joins": [list(p) for j in req.get("joins") or []
+                                                        for p in combinations(j["columns"], 2)]}
                              if a.declare_joins else None)
+    if manifest is not None:  # S3: Detect's confident subject suggestion for a table selection left without one
+        rel = relations.adopt_detect_subjects(rel, artifacts.subject_suggestions(manifest, tables))
     plan = select.select(tables, labels, rel, req, a.release_id)
     plan["provenance"] = artifacts.provenance(a.data, manifest, confirm_sha, select.DETECTOR_VERSION)
     if manifest is None:
