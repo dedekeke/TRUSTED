@@ -86,7 +86,8 @@ def test_job_status_follows_pipeline_stages(pkg, tmp_path, monkeypatch):  # noqa
     monkeypatch.setenv("PRIVACY_TOOL_HMAC_KEY", "parity-key")
     jobs = Jobs(root, model, tmp_path / "runs", scenarios=[])
     jid = jobs.create(dataset="zz_alpha")["id"]
-    bad = {**SPEC, "targets": {"k": 50}, "required": [{"column": "people.city", "task": "T-CITY"},
+    # public: a missed target stops the run
+    bad = {**SPEC, "trust_level": "public", "targets": {"k": 50}, "required": [{"column": "people.city", "task": "T-CITY"},
                                                       {"column": "people.postcode", "task": "T-PC"}]}
     jobs.start(jid, {"spec": bad, "budget": 5, "no_scorecard": True}, key_present=True)
     t = time.time()

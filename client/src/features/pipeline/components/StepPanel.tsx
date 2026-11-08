@@ -72,9 +72,13 @@ export default function StepPanel({ job, step, onJob }: { job: Job; step: JobSte
 
   return (
     <div className="space-y-4">
-      {step.error && step.status !== 'needs_review' && (
-        <Alert showIcon type="error" title="Why this step stopped" description={step.error} />
-      )}
+      {step.error &&
+        step.status !== 'needs_review' &&
+        (step.status === 'warning' ? (
+          <Alert showIcon type="warning" title="Targets not met: continued, not approved" description={step.error} />
+        ) : (
+          <Alert showIcon type="error" title="Why this step stopped" description={step.error} />
+        ))}
       {review && view.tables[0] && <ReviewForm job={job} table={view.tables[0]} onDone={onJob} />}
       {!!issues.length && (
         <Card size="small" title={`Issues (${issues.length})`}>

@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from server.actions import DERIVATIONS, SUPPORTED, execute
+from server.actions import DERIVATIONS, SUPPORTED, execute, resolved_subjects, small_classes
 from server.select import artifacts as A
 from server.select.select import POLICY_VERSION, render
 from server.select.transform import check_plan, release_gate
@@ -139,6 +139,23 @@ def preflight(tables, plan, key, spans=None, text_fallback=False, allow_unapprov
     return errors
 
 
+def _k_flags(frames, tables, plan, ev_dir) -> dict:
+    """Rows of an unapproved export whose QI class has fewer than k people: k_flags_<table>.csv (private only,
+    a public flag would point an attacker at them) and per-table counts for the UI."""
+    k, out = (plan.get("targets") or {}).get("k"), {}
+    if not k:
+        return out
+    for t, df in frames.items():
+        qis = [c["column"] for c in plan["columns"] if c["table"] == t and c["privacy_role"] == "quasi_identifier"]
+        qis = [c for c in qis + [d["column"] for d in plan.get("derived", []) if d["table"] == t] if c in df]
+        small = small_classes(df, qis, resolved_subjects(tables, plan, t), k)
+        out[t] = {"rows": len(df), "below_k": int(small.sum()), "qis": qis, "k": k}
+        if small.any():
+            write_csv(pd.DataFrame({"protected_row": np.flatnonzero(small.values).astype(str)}),
+                      ev_dir / f"k_flags_{t}.csv")
+    return out
+
+
 def _stage(out_root, frames, tables, plan, detect, data_dir, gate):
     stage = out_root / "staging"
     for d in ("protected", "evaluation", "reports"):
@@ -150,6 +167,7 @@ def _stage(out_root, frames, tables, plan, detect, data_dir, gate):
         write_csv(pd.DataFrame({"protected_row": np.arange(len(df)).astype(str), "original_record_id": ids}),
                   stage / "evaluation" / f"rowmap_{t}.csv")
     if not gate["approved"]:
+        write_json(_k_flags(frames, tables, plan, stage / "evaluation"), stage / "evaluation" / "k_flags.json")
         for d in ("protected", "evaluation"):
             (stage / d / NOT_APPROVED).write_text(
                 f"NOT AN APPROVED RELEASE: plan status {gate['status']}, exported with --allow-unapproved.\n")

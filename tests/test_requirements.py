@@ -201,3 +201,9 @@ def test_should_reject_invalid_spec(tmp_path, change, message):
 def test_should_reject_missing_required_key(tmp_path):
     with pytest.raises(ValueError, match="missing required key 'trust_level'"):
         rq.from_spec(write(tmp_path, {"dataset": "d", "required": []}))
+
+
+def test_should_probe_tables_holding_a_name_outside_the_task_table():
+    # FIN-U6 lives on customers but needs card_pan, which only cards/card_transactions have
+    p = parse(["grp", "vid"], table="agg")
+    assert (p["required"], p["tables"]) == (["agg.grp"], ["agg", "labs", "visits"])

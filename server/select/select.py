@@ -29,6 +29,14 @@ def fingerprint(tables: dict[str, pd.DataFrame]) -> str:
     return hashlib.sha256(json.dumps(shape).encode()).hexdigest()[:16]
 
 
+def _period_end(tables, lab, required) -> str | None:
+    """Latest date in the required event columns (e.g. card_transactions.ts), as YYYY-MM-DD."""
+    ends = [pd.to_datetime(tables[t][c], errors="coerce").max() for t, c in map(_split, required)
+            if lab.get(_ref(t, c), {}).get("subtype") in EVENT_SUBTYPES and t in tables and c in tables[t]]
+    ends = [e for e in ends if pd.notna(e)]
+    return max(ends).strftime("%Y-%m-%d") if ends else None
+
+
 def _ref(t, c):
     return f"{t}.{c}"
 
@@ -273,9 +281,15 @@ def select(tables: dict[str, pd.DataFrame], labels: pd.DataFrame, relations: dic
                     continue
                 taken = set(columns[t]) | {d["column"] for d in derived if d["table"] == t}
                 name = "age" if "age" not in taken else f"{c}_age"
-                derived.append({"table": t, "column": name, "sources": [c, events[0]], "method": chosen["method"],
-                                "params": dict(chosen["params"]), "rungs": rungs, "required_by": required.get(ref, []),
-                                "reason": f"age at {events[0]} from {c}, before both are generalised or dropped"})
+                d = {"table": t, "column": name, "sources": [c, events[0]], "method": chosen["method"],
+                     "params": dict(chosen["params"]), "rungs": rungs, "required_by": required.get(ref, []),
+                     "reason": f"age at {events[0]} from {c}, before both are generalised or dropped"}
+                # A profile table (FIN customers) has no analysed event date: age at the end of the analysed period
+                # instead of an unrelated date such as account_open_date.
+                end = None if _ref(t, events[0]) in required else _period_end(tables, lab, required)
+                if end:
+                    d.update(ref_date=end,reason=f"age at {end} (end of the analysed period) from {c}")
+                derived.append(d)
                 entry.update(action="DROP", method=None, params={},
                              reason=entry["reason"] + f"; dropped after deriving {name}")
             plan_cols.append(entry)

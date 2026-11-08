@@ -6,7 +6,8 @@
 
 Each stage writes its own subdirectory (detect/, select/, search/, transform/) through the stage's own CLI, so
 every gate, binding check and issue code applies exactly as when the stages are run by hand. The chain stops at
-the first stage that does not hand over (blocked selection, unapproved search without --allow-unapproved).
+the first stage that does not hand over (blocked selection; a public release whose search is not approved, without
+--allow-unapproved). Missed targets on a non-public release only warn: the export is marked NOT_APPROVED.
 pipeline.json records each stage's exit code, status and artifact digests. The HMAC key comes from
 PRIVACY_TOOL_HMAC_KEY and is never written.
 """
@@ -24,6 +25,7 @@ DETECT_SRC = Path(__file__).resolve().parent / "detect"
 KEY_ENV = "PRIVACY_TOOL_HMAC_KEY"
 STAGES = ("detect", "select", "search", "transform")
 # The one source of run parameters shared by this CLI and server.api, so a UI run equals a CLI run.
+WARN_STATUSES = {"target_unmet", "budget_exhausted"}
 DEFAULTS = {"budget": 50, "tau": 0.8, "llm": False, "text_fallback": None, "allow_unapproved": False,
             "no_scorecard": False}
 
@@ -37,7 +39,12 @@ def _status(path: Path) -> dict:
         return {}
     plan = json.loads(path.read_text())
     return {"status": plan.get("status"), "approved": (plan.get("outcome") or {}).get("approved"),
-            "plan_sha256": _sha(path)}
+            "trust_level": plan.get("trust_level"), "plan_sha256": _sha(path)}
+
+
+def warn_only(st: dict) -> bool:
+    """Missed targets on a non-public release: warn and export marked NOT_APPROVED; a public release stops."""
+    return not st.get("approved") and st.get("status") in WARN_STATUSES and st.get("trust_level") != "public"
 
 
 def _detect(a, out: Path, detect_fn=None) -> dict:
@@ -128,8 +135,9 @@ def run(a, on_step=None, detect_fn=None, start: str = "detect", attempt: int = 1
                                "--out", str(sea), "--budget", str(a.budget), "--tau", str(a.tau),
                                "--detect", str(det)])
     st = _status(sea / "decisions.json")
-    record["stages"]["search"] = note("search", {"exit": code, "dir": sea.name, **st})
-    if not st.get("approved") and not a.allow_unapproved:
+    warned = warn_only(st)
+    record["stages"]["search"] = note("search", {"exit": code, "dir": sea.name, **st, "warning": warned})
+    if not st.get("approved") and not a.allow_unapproved and not warned:
         record["stages"]["transform"] = note("transform", {
             "exit": None, "status": "not_run",
             "reason": f"search status {st.get('status')}, approved={st.get('approved')}; "
@@ -139,7 +147,7 @@ def run(a, on_step=None, detect_fn=None, start: str = "detect", attempt: int = 1
     note("transform", {"status": "running"})
     argv = ["--data", a.data, "--plan", str(sea / "decisions.json"), "--out", str(tra), "--detect", str(det)]
     argv += ["--text-fallback", a.text_fallback] if a.text_fallback else []
-    argv += ["--allow-unapproved"] if a.allow_unapproved else []
+    argv += ["--allow-unapproved"] if a.allow_unapproved or warned else []
     argv += ["--no-scorecard"] if a.no_scorecard else []
     code = _call(transform_main, argv)
     man = tra / "manifest.json"

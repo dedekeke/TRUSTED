@@ -267,17 +267,30 @@ def test_pipeline_runs_detect_select_search_transform_end_to_end(pkg, tmp_path, 
         {"people.notes": "detect_entity_pseudonyms+rules"}
 
 
-def test_pipeline_stops_at_an_unapproved_search(pkg, tmp_path, monkeypatch):
+def _unmet_run(pkg, tmp_path, monkeypatch, trust):
     from server.pipeline import main as pipeline
     root, model = pkg
     spec = tmp_path / "spec.json"
-    spec.write_text(json.dumps({"dataset": "zz_alpha", "trust_level": "internal", "targets": {"k": 50},
+    spec.write_text(json.dumps({"dataset": "zz_alpha", "trust_level": trust, "targets": {"k": 50},
                                 "required": [{"column": "people.city", "task": "T-CITY"},
                                              {"column": "people.postcode", "task": "T-PC"}]}))
     monkeypatch.setenv("PRIVACY_TOOL_HMAC_KEY", "test-only-key")
     out = tmp_path / "run"
     code = pipeline(["--data", str(root / "data" / "zz_alpha"), "--spec", str(spec), "--model", str(model),
                      "--release-id", "zz/test", "--out", str(out), "--no-scorecard", "--budget", "5"])
-    record = json.loads((out / "pipeline.json").read_text())
+    return code, out, json.loads((out / "pipeline.json").read_text())
+
+
+def test_pipeline_stops_at_an_unapproved_public_search(pkg, tmp_path, monkeypatch):
+    code, out, record = _unmet_run(pkg, tmp_path, monkeypatch, "public")
     assert code != 0 and record["stages"]["transform"]["status"] == "not_run"
     assert not (out / "transform").exists()
+
+
+def test_pipeline_warns_and_exports_unapproved_non_public_search(pkg, tmp_path, monkeypatch):
+    _, out, record = _unmet_run(pkg, tmp_path, monkeypatch, "internal")
+    assert record["stages"]["search"]["warning"] is True
+    assert record["stages"]["transform"]["status"] == "unapproved_export"
+    flags = json.loads((out / "transform" / "evaluation" / "k_flags.json").read_text())
+    assert flags["people"]["below_k"] > 0 and (out / "transform" / "evaluation" / "k_flags_people.csv").is_file()
+    assert not list((out / "transform" / "protected").glob("k_flags*"))

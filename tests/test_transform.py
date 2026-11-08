@@ -227,3 +227,10 @@ def test_transform_cli_checks_input_binding(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv('PRIVACY_TOOL_HMAC_KEY', 'test-key')
     assert main(['transform', '--data', str(data), '--plan', str(tmp_path / 'plan.json'), '--out', str(tmp_path / 'o')]) == 2
     assert '[input_mismatch]' in capsys.readouterr().err and not (tmp_path / 'o').exists()
+
+
+def test_should_derive_age_at_ref_date_instead_of_row_event():
+    from server.actions import derive_age_band
+    df = pd.DataFrame({"dob": ["1990-06-01"], "opened": ["2000-01-01"]})
+    assert derive_age_band(df, "dob", "opened", width=10)[0] == "0-9"
+    assert derive_age_band(df, "dob", "opened", width=10, ref_date="2025-12-31")[0] == "30-39"

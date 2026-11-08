@@ -121,6 +121,8 @@ def parse_needs(task, tables):
                     if ref and ref not in refs:
                         refs.append(ref)
                         touched.add(ref.split(".")[0])
+                    elif ref is None and prefix is None:  # e.g. FIN-U6 card_pan (cards + card_transactions): let probing find it
+                        touched.update(t for t in tables if name.strip() in tables[t].columns)
             if refs:
                 alternatives.append(refs)
         if hint is not None:

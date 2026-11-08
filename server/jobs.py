@@ -370,9 +370,10 @@ class Jobs:
                     self._set(d, "review", status="success", summary="not a review issue")
         elif stage == "search":
             ok = bool(entry.get("approved"))
-            self._set(d, "search", status="success" if ok else "failed",
-                      summary=api_views.summary("search", d, ctx),
-                      error=None if ok else f"search: {entry.get('status')} (targets not met, not approved)")
+            status = "success" if ok else "warning" if entry.get("warning") else "failed"
+            self._set(d, "search", status=status, summary=api_views.summary("search", d, ctx),
+                      error=None if ok else f"search: {entry.get('status')} (targets not met, not approved)"
+                      + ("; exported marked NOT_APPROVED, rows below k listed in evaluation/" if status == "warning" else ""))
         elif stage == "transform":
             s = entry.get("status")
             if s == "not_run":

@@ -265,6 +265,10 @@ def view_transform(job: Path, ctx: dict) -> dict:
               "residual": un.get(k, 0), "reason": (fp.get(k) or {}).get("reason", "")}
              for k in sorted(set(raw) | set(un))]
     red = [{"column": c, "method": m} for c, m in (stats.get("redaction") or {}).items()]
+    flags = [{"table": t, "rows": f.get("rows"), "below_k": f.get("below_k"), "k": f.get("k"),
+              "share": _r(f["below_k"] / f["rows"]) if f.get("rows") else None, "qis": ", ".join(f.get("qis") or []),
+              "file": f"evaluation/k_flags_{t}.csv" if f.get("below_k") else ""}
+             for t, f in (_json(tra / "evaluation" / "k_flags.json") or {}).items()]
     return {"stats": [{"label": "Validation", "value": man.get("validation_status")},
                       {"label": "Approved release", "value": man.get("approved_release")},
                       {"label": "Tables exported", "value": len(man.get("tables") or {})},
@@ -275,6 +279,10 @@ def view_transform(job: Path, ctx: dict) -> dict:
                        table("exported", "Exported tables (protected/)", [
                            ("table", "Table"), ("rows", "Rows"), ("columns", "Columns"),
                            ("suppressed_rows", "Rows suppressed"), ("suppressed_cells", "Cells suppressed")], exported),
+                       table("k_flags", "Rows below the k target (not approved export)", [
+                           ("table", "Table"), ("rows", "Rows"), ("below_k", "Rows below k"), ("share", "Share"),
+                           ("k", "Target k"), ("qis", "Quasi-identifiers"), ("file", "Row list (private)")], flags,
+                           note="Row numbers are only in the private evaluation/ folder, never in protected/."),
                        table("redaction", "Free-text redaction", [("column", "Column"), ("method", "Method")], red),
                        table("identifiers", "Residual identifier scan (pets-eval check)", [
                            ("label", "Type"), ("raw_hits", "Pattern hits"), ("false_positives", "False positives"),

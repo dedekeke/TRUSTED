@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 from pets_eval import privacy
 
+from server.actions import age_years
+
 from . import preview as T
 from .policy import NUMERIC
 
@@ -51,7 +53,7 @@ class _Evaluator:
                 if cache_key not in self.cache:
                     rung = c['rungs'][level] if level is not None else c
                     if 'sources' in c:
-                        value = T.derive_age_band(self.tables[table], *c['sources'], **rung['params'])
+                        value = T.derive_age_band(self.tables[table], *c['sources'], **rung['params'], ref_date=c.get('ref_date'))
                     else:
                         value = T.apply_column(self.tables[table][c['column']], {**c, **rung}, self.key,
                                                self.plan['release_id'], self.tables[table], self.plan['columns'],
@@ -266,10 +268,7 @@ def search(tables, plan, key, tasks=None, orig=None, budget=50, tau=0.8, spans=N
         if c['action'] != 'DROP' and c['privacy_role'] not in ('direct_identifier', 'technical_identifier', 'record_key', 'free_text'):
             minimized[c['table']][c['column']] = tables[c['table']][c['column']]
     for d in plan.get('derived', []):
-        birth, event = d['sources']
-        src = tables[d['table']]
-        age = (T.safe_datetime(src[event]) - T.safe_datetime(src[birth])).dt.days / 365.25
-        minimized[d['table']][d['column']] = age.where(age >= 0)
+        minimized[d['table']][d['column']] = age_years(tables[d['table']], *d['sources'], d.get('ref_date'))
     base = {task.id: None for task in ev.tasks}
     if ev.tasks and len(trace) >= budget:
         unexplored += 1

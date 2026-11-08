@@ -261,10 +261,16 @@ def registrable_domain(host: str) -> str:
     return ".".join(labels[-n:])
 
 
-def derive_age_band(df: pd.DataFrame, birth: str, event: str, width: int = 10, top: int = 80) -> pd.Series:
-    """Age at the row's original event date (toolkit formula: days / 365.25), as canonical bands."""
-    age = (safe_datetime(df[event].where(~blank(df[event]))) - safe_datetime(df[birth].where(~blank(df[birth])))).dt.days / 365.25
-    return Pz.to_age_band(age.where(age >= 0), width=width, top=top).fillna("")
+def age_years(df: pd.DataFrame, birth: str, event: str, ref_date: str | None = None) -> pd.Series:
+    """Age at the row's original event date, or at ref_date when set (toolkit formula: days / 365.25)."""
+    at = pd.Series(pd.Timestamp(ref_date), index=df.index) if ref_date else safe_datetime(df[event].where(~blank(df[event])))
+    age = (at - safe_datetime(df[birth].where(~blank(df[birth])))).dt.days / 365.25
+    return age.where(age >= 0)
+
+
+def derive_age_band(df: pd.DataFrame, birth: str, event: str, width: int = 10, top: int = 80,
+                    ref_date: str | None = None) -> pd.Series:
+    return Pz.to_age_band(age_years(df, birth, event, ref_date), width=width, top=top).fillna("")
 
 
 UNKNOWN_SUBJECT = "\x00unknown-subject"  # one stand-in person for all unresolved rows of a QI class
@@ -337,7 +343,7 @@ def execute(tables: dict[str, pd.DataFrame], plan: dict, key: bytes, spans: dict
                 raise ValueError(f"unsupported derivation {dv['method']}")
             if dv["column"] in src.columns or dv["column"] in res:
                 raise ValueError(f"derived column {t}.{dv['column']} would collide with another column")
-            res[dv["column"]] = derive_age_band(src, *dv["sources"], **(dv.get("params") or {})).astype(str)
+            res[dv["column"]] = derive_age_band(src, *dv["sources"], **(dv.get("params") or {}), ref_date=dv.get("ref_date")).astype(str)
             lost = int((res[dv["column"]] == "").sum())
             if lost:
                 stats["blanked"][f"{t}.{dv['column']}"] = lost
