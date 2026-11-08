@@ -224,7 +224,7 @@ export default function NewRunForm({ onStarted }: { onStarted: (job: Job) => voi
             <InputNumber min={1} max={500} value={budget} onChange={(v) => setBudget(v ?? 50)} />
           </div>
           <div className="flex items-center justify-between gap-2">
-            <span>Local LLM tier in Detect (Ollama)</span>
+            <span>Local LLM tier in Detect (JEV)</span>
             <Switch checked={llm} onChange={setLlm} />
           </div>
           <div className="flex items-center justify-between gap-2">
